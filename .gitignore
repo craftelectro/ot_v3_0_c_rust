@@ -1,0 +1,17 @@
+# ESP-IDF
+build/
+sdkconfig.old
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
