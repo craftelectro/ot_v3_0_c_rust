@@ -2,6 +2,7 @@
 #include "coap_if.h"
 #include "logic.h"
 #include "config.h"
+#include "config_store.h"
 
 #include "esp_openthread.h"
 #include "esp_openthread_lock.h"
@@ -18,8 +19,23 @@
 #include <openthread/thread.h>
 #include <openthread/ip6.h>
 #include <openthread/logging.h>   // <-- ДОБАВИТЬ
+#include <string.h>
 
 static const char *TAG = "ot_app";
+
+static bool dataset_has_required_fields(const otOperationalDataset *dataset)
+{
+    if (!dataset) {
+        return false;
+    }
+
+    return dataset->mComponents.mIsActiveTimestampPresent &&
+           dataset->mComponents.mIsChannelPresent &&
+           dataset->mComponents.mIsPanIdPresent &&
+           dataset->mComponents.mIsExtendedPanIdPresent &&
+           dataset->mComponents.mIsNetworkKeyPresent &&
+           dataset->mComponents.mIsNetworkNamePresent;
+}
 
 static esp_netif_t *init_openthread_netif(const esp_openthread_platform_config_t *config)
 {
@@ -31,25 +47,27 @@ static esp_netif_t *init_openthread_netif(const esp_openthread_platform_config_t
 
 static void ensure_active_dataset(otInstance *ot)
 {
-    otOperationalDatasetTlvs tlv;
-    if (otDatasetGetActiveTlvs(ot, &tlv) == OT_ERROR_NONE) {
+    const app_config_t *cfg = config_store_get();
+    otOperationalDataset current;
+    memset(&current, 0, sizeof(current));
+    if (otDatasetGetActive(ot, &current) == OT_ERROR_NONE &&
+        dataset_has_required_fields(&current)) {
         ESP_LOGI(TAG, "Active Dataset already present");
         return;
     }
+
+    ESP_LOGW(TAG, "Active Dataset missing or incomplete, applying defaults");
 
     otOperationalDataset d;
     memset(&d, 0, sizeof(d));
 
     d.mActiveTimestamp = (otTimestamp){ .mSeconds = 1 };
-    d.mChannel = OT_CHANNEL;
-    d.mPanId   = OT_PANID;
+    d.mChannel = cfg->ot_channel;
+    d.mPanId   = cfg->ot_panid;
 
-    static const uint8_t xpanid[8] = OT_EXT_PANID;
-    static const uint8_t nkey[16]  = OT_NETWORK_KEY;
-
-    memcpy(d.mExtendedPanId.m8, xpanid, sizeof(xpanid));
-    memcpy(d.mNetworkKey.m8,     nkey,  sizeof(nkey));
-    strcpy((char*)d.mNetworkName.m8, OT_NETWORK_NAME);
+    memcpy(d.mExtendedPanId.m8, cfg->ot_ext_panid, sizeof(cfg->ot_ext_panid));
+    memcpy(d.mNetworkKey.m8,     cfg->ot_network_key,  sizeof(cfg->ot_network_key));
+    strcpy((char*)d.mNetworkName.m8, cfg->ot_network_name);
 
     d.mComponents.mIsActiveTimestampPresent = true;
     d.mComponents.mIsChannelPresent         = true;

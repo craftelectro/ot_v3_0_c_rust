@@ -4,6 +4,7 @@
 #include "rgb_led.h"
 #include "tfmini.h"
 #include "coap_if.h"
+#include "config_store.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -18,7 +19,6 @@
 #include "freertos/queue.h"
 
 
-static int64_t s_last_local_trigger_us = 0;
 static const char *TAG = "logic";
 static zone_state_t s_state;
 
@@ -150,7 +150,7 @@ static light_mode_t effective_mode(void)
     return io_board_read_mode_switch();   // контроллер главный
 #else
     if (s_node_mode_valid) return s_node_mode;
-    if (s_zone_mode_valid && s_zone_mode_zone == ZONE_ID) return s_zone_mode;
+    if (s_zone_mode_valid && s_zone_mode_zone == config_store_get()->zone_id) return s_zone_mode;
     if (s_global_mode_valid) return s_global_mode;
     return s_state.mode;                  // локальный режим (NVS/CLI)
 #endif
@@ -678,7 +678,7 @@ static void local_become_owner_or_refresh(bool force_new_owner)
     s_state.active = true;
     s_state.pending_restore = false;
     s_state.last_motion_us = now;
-    s_state.deadline_us = now + (int64_t)AUTO_HOLD_MS * 1000;
+    s_state.deadline_us = now + (int64_t)config_store_get()->auto_hold_ms * 1000;
 
     // set_relay(true);
     nvs_save_all();
@@ -1106,7 +1106,7 @@ static void logic_task(void *arg)
                 // (опционально) лог раз в N, иначе заспамит
                 // ESP_LOGI(TAG, "TFMINI: dist=%u cm thr=%u", dist, TFMINI_TRIGGER_CM);
 
-                if (dist > 0 && dist <= TFMINI_TRIGGER_CM) {
+                if (dist > 0 && dist <= config_store_get()->tfmini_trigger_cm) {
                     local_become_owner_or_refresh(false);
                 }
             }

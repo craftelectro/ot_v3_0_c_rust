@@ -23,6 +23,8 @@ idf_component_register(
         "logic.c"
         "coap_if.c"
         "ot_app.c"
+        "config_store.c"
+        "config_portal.c"
     INCLUDE_DIRS "."
-    REQUIRES openthread nvs_flash driver esp_timer led_strip esp_netif vfs
+    REQUIRES openthread nvs_flash driver esp_timer led_strip esp_netif vfs esp_wifi esp_http_server
 )
