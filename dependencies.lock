@@ -1,0 +1,39 @@
+dependencies:
+  espressif/esp_ot_cli_extension:
+    component_hash: 471c8b346cbdefde32bde48c68333ab6b3f8eb07db81afe3f16c0915012c65f0
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.4.7
+  espressif/led_strip:
+    component_hash: 28c6509a727ef74925b372ed404772aeedf11cce10b78c3f69b3c66799095e2d
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.5.5
+  idf:
+    source:
+      type: idf
+    version: 5.2.0
+  iperf:
+    dependencies: []
+    source:
+      path: /home/superalex/esp/esp-idf/examples/common_components/iperf
+      type: local
+    version: '*'
+direct_dependencies:
+- espressif/esp_ot_cli_extension
+- espressif/led_strip
+- idf
+- iperf
+manifest_hash: 49410e2c507d4640525bddac753463e53a79b0883c785c84429886488d21292c
+target: esp32c6
+version: 2.0.0
