@@ -10,6 +10,8 @@ extern "C" {
 #endif
 
 #define CONFIG_STORE_NS "cfg"
+#define CONFIG_STORE_KEY "cfg"
+#define CONFIG_STORE_FLAG_KEY "cfg_set"
 #define CONFIG_STORE_MAGIC 0x43464701u
 #define CONFIG_STORE_VERSION 1u
 #define CONFIG_STORE_NET_NAME_MAX 16

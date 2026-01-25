@@ -46,6 +46,18 @@ static bool config_store_is_valid(const app_config_t *cfg)
     return true;
 }
 
+static bool config_store_has_flag(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(CONFIG_STORE_NS, NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    uint8_t flag = 0;
+    esp_err_t err = nvs_get_u8(h, CONFIG_STORE_FLAG_KEY, &flag);
+    nvs_close(h);
+    return (err == ESP_OK && flag == 1);
+}
+
 static esp_err_t config_store_load(app_config_t *cfg)
 {
     nvs_handle_t h;
@@ -55,7 +67,7 @@ static esp_err_t config_store_load(app_config_t *cfg)
     }
 
     size_t len = sizeof(*cfg);
-    err = nvs_get_blob(h, "cfg", cfg, &len);
+    err = nvs_get_blob(h, CONFIG_STORE_KEY, cfg, &len);
     nvs_close(h);
     if (err != ESP_OK || len != sizeof(*cfg)) {
         return ESP_FAIL;
@@ -68,7 +80,9 @@ void config_store_init(void)
 {
     config_store_apply_defaults(&s_cfg);
     app_config_t stored;
-    if (config_store_load(&stored) == ESP_OK && config_store_is_valid(&stored)) {
+    if (config_store_has_flag() &&
+        config_store_load(&stored) == ESP_OK &&
+        config_store_is_valid(&stored)) {
         s_cfg = stored;
         s_configured = true;
         ESP_LOGI(TAG, "Loaded config from NVS");
@@ -100,7 +114,10 @@ esp_err_t config_store_save(const app_config_t *cfg)
         return err;
     }
 
-    err = nvs_set_blob(h, "cfg", cfg, sizeof(*cfg));
+    err = nvs_set_blob(h, CONFIG_STORE_KEY, cfg, sizeof(*cfg));
+    if (err == ESP_OK) {
+        err = nvs_set_u8(h, CONFIG_STORE_FLAG_KEY, 1);
+    }
     if (err == ESP_OK) {
         err = nvs_commit(h);
     }

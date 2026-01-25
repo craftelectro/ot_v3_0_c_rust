@@ -27,7 +27,7 @@ static esp_timer_handle_t s_clear_timer = NULL;
 
 #define RESET_NS "portal"
 #define RESET_KEY "rst_count"
-#define RESET_CLEAR_DELAY_US (15 * 1000 * 1000)
+#define RESET_CLEAR_DELAY_US (5 * 1000 * 1000)
 
 static int reset_sequence_load(void)
 {
