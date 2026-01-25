@@ -9,6 +9,7 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 
 #include "driver/gpio.h"
@@ -20,6 +21,28 @@
 static const char *TAG = "config_portal";
 static httpd_handle_t s_server;
 static bool s_running = false;
+static bool s_force_portal = false;
+
+RTC_DATA_ATTR static int s_reset_count = 0;
+RTC_DATA_ATTR static int64_t s_last_reset_us = 0;
+
+static bool detect_reset_sequence(void)
+{
+    const int64_t now = esp_timer_get_time();
+    const int64_t window_us = 5000 * 1000;
+
+    if (now - s_last_reset_us > window_us) {
+        s_reset_count = 0;
+    }
+    s_last_reset_us = now;
+    s_reset_count++;
+
+    if (s_reset_count >= 3) {
+        s_reset_count = 0;
+        return true;
+    }
+    return false;
+}
 
 static int hex_value(char c)
 {
@@ -293,6 +316,10 @@ static void start_wifi_ap(void)
 
 static bool should_start_portal(void)
 {
+    if (s_force_portal) {
+        return true;
+    }
+
     if (!config_store_is_configured()) {
         return true;
     }
@@ -308,6 +335,7 @@ static bool should_start_portal(void)
 
 void config_portal_start_if_needed(void)
 {
+    s_force_portal = detect_reset_sequence();
     if (!should_start_portal()) {
         return;
     }
