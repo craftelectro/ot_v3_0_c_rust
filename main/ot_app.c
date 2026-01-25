@@ -2,6 +2,7 @@
 #include "coap_if.h"
 #include "logic.h"
 #include "config.h"
+#include "config_store.h"
 
 #include "esp_openthread.h"
 #include "esp_openthread_lock.h"
@@ -18,66 +19,9 @@
 #include <openthread/thread.h>
 #include <openthread/ip6.h>
 #include <openthread/logging.h>   // <-- ДОБАВИТЬ
-#include <ctype.h>
 #include <string.h>
 
 static const char *TAG = "ot_app";
-
-static int hex_value(char c)
-{
-    if (c >= '0' && c <= '9') {
-        return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-        return 10 + (c - 'a');
-    }
-    if (c >= 'A' && c <= 'F') {
-        return 10 + (c - 'A');
-    }
-    return -1;
-}
-
-static bool parse_hex_string(const char *str, uint8_t *out, size_t out_len)
-{
-    if (!str || !out || out_len == 0) {
-        return false;
-    }
-
-    size_t idx = 0;
-    int high = -1;
-
-    for (const char *p = str; *p != '\0'; ++p) {
-        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-            ++p;
-            continue;
-        }
-
-        if (isxdigit((unsigned char)*p)) {
-            int val = hex_value(*p);
-            if (val < 0) {
-                return false;
-            }
-            if (high < 0) {
-                high = val;
-            } else {
-                if (idx >= out_len) {
-                    return false;
-                }
-                out[idx++] = (uint8_t)((high << 4) | val);
-                high = -1;
-            }
-            continue;
-        }
-
-        if (*p == ':' || *p == '-' || *p == ' ') {
-            continue;
-        }
-
-        return false;
-    }
-
-    return (high < 0) && (idx == out_len);
-}
 
 static bool dataset_has_required_fields(const otOperationalDataset *dataset)
 {
@@ -103,6 +47,7 @@ static esp_netif_t *init_openthread_netif(const esp_openthread_platform_config_t
 
 static void ensure_active_dataset(otInstance *ot)
 {
+    const app_config_t *cfg = config_store_get();
     otOperationalDataset current;
     memset(&current, 0, sizeof(current));
     if (otDatasetGetActive(ot, &current) == OT_ERROR_NONE &&
@@ -117,27 +62,12 @@ static void ensure_active_dataset(otInstance *ot)
     memset(&d, 0, sizeof(d));
 
     d.mActiveTimestamp = (otTimestamp){ .mSeconds = 1 };
-    d.mChannel = OT_CHANNEL;
-    d.mPanId   = OT_PANID;
+    d.mChannel = cfg->ot_channel;
+    d.mPanId   = cfg->ot_panid;
 
-    uint8_t xpanid[8] = {0};
-    uint8_t nkey[16] = {0};
-
-    bool ok = parse_hex_string(OT_EXT_PANID_STR, xpanid, sizeof(xpanid));
-    if (!ok) {
-        ESP_LOGE(TAG, "Invalid OT_EXT_PANID: %s", OT_EXT_PANID_STR);
-    }
-    ESP_ERROR_CHECK(ok ? ESP_OK : ESP_FAIL);
-
-    ok = parse_hex_string(OT_NETWORK_KEY_STR, nkey, sizeof(nkey));
-    if (!ok) {
-        ESP_LOGE(TAG, "Invalid OT_NETWORK_KEY: %s", OT_NETWORK_KEY_STR);
-    }
-    ESP_ERROR_CHECK(ok ? ESP_OK : ESP_FAIL);
-
-    memcpy(d.mExtendedPanId.m8, xpanid, sizeof(xpanid));
-    memcpy(d.mNetworkKey.m8,     nkey,  sizeof(nkey));
-    strcpy((char*)d.mNetworkName.m8, OT_NETWORK_NAME);
+    memcpy(d.mExtendedPanId.m8, cfg->ot_ext_panid, sizeof(cfg->ot_ext_panid));
+    memcpy(d.mNetworkKey.m8,     cfg->ot_network_key,  sizeof(cfg->ot_network_key));
+    strcpy((char*)d.mNetworkName.m8, cfg->ot_network_name);
 
     d.mComponents.mIsActiveTimestampPresent = true;
     d.mComponents.mIsChannelPresent         = true;

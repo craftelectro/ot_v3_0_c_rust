@@ -8,6 +8,8 @@
 #include "io_board.h"
 #include "tfmini.h"
 #include "ot_app.h"
+#include "config_store.h"
+#include "config_portal.h"
 
 void app_main(void)
 {
@@ -24,5 +26,10 @@ void app_main(void)
     ESP_ERROR_CHECK(tfmini_init());
 #endif
 
-    ot_app_start();
+    config_store_init();
+    config_portal_start_if_needed();
+
+    if (!config_portal_is_running()) {
+        ot_app_start();
+    }
 }

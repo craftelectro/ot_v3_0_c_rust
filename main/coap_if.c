@@ -1,6 +1,7 @@
 #include "coap_if.h"
 #include "logic.h"
 #include "config.h"
+#include "config_store.h"
 
 #include "esp_openthread_lock.h"
 #include "esp_log.h"
@@ -25,7 +26,8 @@ static otIp6Address s_mcast_all_nodes; // ff03::1
 
 static void zone_id_str(char *out, size_t n)
 {
-    snprintf(out, n, "%d", ZONE_ID);
+    const app_config_t *cfg = config_store_get();
+    snprintf(out, n, "%d", cfg->zone_id);
 }
 
 static otMessage *new_post_msg(void)
@@ -314,7 +316,7 @@ static void on_trigger(void *ctx, otMessage *msg, const otMessageInfo *info)
     // rem_ms: новый ключ rem_ms= , fallback legacy h=
     if (!parse_u32_kv(buf, "rem_ms", &rem_ms)) {
         if (!parse_u32_kv(buf, "h", &rem_ms)) {
-            rem_ms = (uint32_t)AUTO_HOLD_MS;
+            rem_ms = config_store_get()->auto_hold_ms;
         }
     }
 
@@ -434,11 +436,12 @@ void coap_if_register(otInstance *ot)
     static char path_mode[40];
 
 
-    snprintf(path_state_req, sizeof(path_state_req), "zone/%d/state_req", ZONE_ID);
-    snprintf(path_state_rsp, sizeof(path_state_rsp), "zone/%d/state_rsp", ZONE_ID);
-    snprintf(path_trigger,   sizeof(path_trigger),   "zone/%d/trigger",   ZONE_ID);
-    snprintf(path_off,       sizeof(path_off),       "zone/%d/off",       ZONE_ID);
-    snprintf(path_mode,      sizeof(path_mode),      "zone/%d/mode",      ZONE_ID);
+    uint8_t zid = config_store_get()->zone_id;
+    snprintf(path_state_req, sizeof(path_state_req), "zone/%d/state_req", zid);
+    snprintf(path_state_rsp, sizeof(path_state_rsp), "zone/%d/state_rsp", zid);
+    snprintf(path_trigger,   sizeof(path_trigger),   "zone/%d/trigger",   zid);
+    snprintf(path_off,       sizeof(path_off),       "zone/%d/off",       zid);
+    snprintf(path_mode,      sizeof(path_mode),      "zone/%d/mode",      zid);
 
 
     static otCoapResource r_state_req;
