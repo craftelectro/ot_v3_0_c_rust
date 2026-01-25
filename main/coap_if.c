@@ -162,42 +162,46 @@ static bool parse_ip_kv(const char *s, const char *key, otIp6Address *out)
 
 static int read_payload(otMessage *msg, char *out, size_t out_sz)
 {
-    if (!out || out_sz == 0) return 0;
+    if (!out || out_sz == 0) {
+        return 0;
+    }
     out[0] = 0;
 
     int len = (int)otMessageGetLength(msg);
-    if (len <= 0) return 0;
-
-    // читаем целиком сообщение (ограниченно)
-    uint8_t tmp[256];
-    int to_read = len;
-    if (to_read > (int)sizeof(tmp)) to_read = sizeof(tmp);
-
-    int rd = otMessageRead(msg, 0, tmp, to_read);
-    if (rd <= 0) return 0;
-
-    // ищем CoAP payload marker 0xFF
-    int i;
-    for (i = 0; i < rd; i++) {
-        if (tmp[i] == 0xFF) {
-            i++; // payload starts after 0xFF
-            break;
-        }
-    }
-    if (i >= rd) {
-        // payload marker not found -> no payload
+    if (len <= 0) {
         return 0;
     }
 
-    int pay_len = rd - i;
-    if (pay_len <= 0) return 0;
+    uint16_t offset = otMessageGetOffset(msg);
+    if (offset >= len) {
+        return 0;
+    }
 
-    // копируем в out как строку
-    size_t copy = (size_t)pay_len;
-    if (copy > out_sz - 1) copy = out_sz - 1;
-    memcpy(out, &tmp[i], copy);
-    out[copy] = 0;
-    return (int)copy;
+    int payload_len = len - (int)offset;
+    if (payload_len <= 0) {
+        return 0;
+    }
+
+    size_t copy = (size_t)payload_len;
+    bool truncated = false;
+    if (copy > out_sz - 1) {
+        copy = out_sz - 1;
+        truncated = true;
+    }
+
+    int rd = otMessageRead(msg, offset, out, (uint16_t)copy);
+    if (rd <= 0) {
+        out[0] = 0;
+        return 0;
+    }
+
+    out[rd] = 0;
+
+    if (truncated) {
+        ESP_LOGW(TAG, "payload truncated: len=%d, buf=%zu", payload_len, out_sz - 1);
+    }
+
+    return rd;
 }
 
 
