@@ -11,6 +11,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "nvs.h"
 
 #include "driver/gpio.h"
 
@@ -22,25 +23,71 @@ static const char *TAG = "config_portal";
 static httpd_handle_t s_server;
 static bool s_running = false;
 static bool s_force_portal = false;
+static esp_timer_handle_t s_clear_timer = NULL;
 
-RTC_DATA_ATTR static int s_reset_count = 0;
-RTC_DATA_ATTR static int64_t s_last_reset_us = 0;
+#define RESET_NS "portal"
+#define RESET_KEY "rst_count"
+#define RESET_CLEAR_DELAY_US (15 * 1000 * 1000)
+
+static int reset_sequence_load(void)
+{
+    nvs_handle_t h;
+    int count = 0;
+    if (nvs_open(RESET_NS, NVS_READONLY, &h) != ESP_OK) {
+        return 0;
+    }
+    (void)nvs_get_i32(h, RESET_KEY, &count);
+    nvs_close(h);
+    if (count < 0) {
+        count = 0;
+    }
+    return count;
+}
+
+static void reset_sequence_save(int count)
+{
+    nvs_handle_t h;
+    if (nvs_open(RESET_NS, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    (void)nvs_set_i32(h, RESET_KEY, count);
+    (void)nvs_commit(h);
+    nvs_close(h);
+}
+
+static void reset_sequence_clear_cb(void *arg)
+{
+    (void)arg;
+    reset_sequence_save(0);
+}
+
+static void reset_sequence_schedule_clear(void)
+{
+    if (!s_clear_timer) {
+        esp_timer_create_args_t args = {
+            .callback = reset_sequence_clear_cb,
+            .name = "portal_clear",
+        };
+        if (esp_timer_create(&args, &s_clear_timer) != ESP_OK) {
+            return;
+        }
+    }
+    (void)esp_timer_stop(s_clear_timer);
+    (void)esp_timer_start_once(s_clear_timer, RESET_CLEAR_DELAY_US);
+}
 
 static bool detect_reset_sequence(void)
 {
-    const int64_t now = esp_timer_get_time();
-    const int64_t window_us = 5000 * 1000;
+    int count = reset_sequence_load();
+    count++;
 
-    if (now - s_last_reset_us > window_us) {
-        s_reset_count = 0;
-    }
-    s_last_reset_us = now;
-    s_reset_count++;
-
-    if (s_reset_count >= 3) {
-        s_reset_count = 0;
+    if (count >= 3) {
+        reset_sequence_save(0);
         return true;
     }
+
+    reset_sequence_save(count);
+    reset_sequence_schedule_clear();
     return false;
 }
 
