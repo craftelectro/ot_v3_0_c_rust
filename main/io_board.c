@@ -2,16 +2,20 @@
 #include "config.h"
 #include "io_board.h"
 #include "driver/gpio.h"
+#include "esp_err.h"
 
 static bool s_relay_on = false;
 
-void io_board_init(void)
+esp_err_t io_board_init(void)
 {
     gpio_config_t out = {
         .pin_bit_mask = (1ULL << PIN_RELAY),
         .mode = GPIO_MODE_OUTPUT,
     };
-    gpio_config(&out);
+    esp_err_t err = gpio_config(&out);
+    if (err != ESP_OK) {
+        return err;
+    }
 
 #if ROLE_CONTROLLER
     gpio_config_t inp = {
@@ -19,8 +23,13 @@ void io_board_init(void)
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = 1,
     };
-    gpio_config(&inp);
+    err = gpio_config(&inp);
+    if (err != ESP_OK) {
+        return err;
+    }
 #endif
+
+    return ESP_OK;
 }
 
 void io_board_set_relay(bool on)
