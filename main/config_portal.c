@@ -32,7 +32,7 @@ static esp_timer_handle_t s_clear_timer = NULL;
 static int reset_sequence_load(void)
 {
     nvs_handle_t h;
-    int count = 0;
+    int32_t count = 0;
     if (nvs_open(RESET_NS, NVS_READONLY, &h) != ESP_OK) {
         return 0;
     }
