@@ -5,7 +5,7 @@
 
 static const char *TAG = "tfmini";
 
-void tfmini_init(void)
+esp_err_t tfmini_init(void)
 {
     uart_config_t cfg = {
         .baud_rate = 115200,
@@ -16,13 +16,26 @@ void tfmini_init(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    ESP_ERROR_CHECK(uart_driver_install(UART_PORT, 512, 0, 0, NULL, 0));
-    ESP_ERROR_CHECK(uart_param_config(UART_PORT, &cfg));
-    ESP_ERROR_CHECK(uart_set_pin(UART_PORT,
-                                 UART_TFMINI_TX,
-                                 UART_TFMINI_RX,
-                                 UART_PIN_NO_CHANGE,
-                                 UART_PIN_NO_CHANGE));
+    esp_err_t err = uart_driver_install(UART_PORT, 512, 0, 0, NULL, 0);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = uart_param_config(UART_PORT, &cfg);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = uart_set_pin(UART_PORT,
+                       UART_TFMINI_TX,
+                       UART_TFMINI_RX,
+                       UART_PIN_NO_CHANGE,
+                       UART_PIN_NO_CHANGE);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    return ESP_OK;
 }
 
 bool tfmini_poll_once(uint16_t *out_dist_cm)

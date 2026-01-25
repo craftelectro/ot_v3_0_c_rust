@@ -19,8 +19,10 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_vfs_eventfd_register(&ev));
 
     ESP_ERROR_CHECK(rgb_init());
-    io_board_init();
-    tfmini_init();
+    ESP_ERROR_CHECK(io_board_init());
+#if HAS_TFMINI
+    ESP_ERROR_CHECK(tfmini_init());
+#endif
 
     ot_app_start();
 }

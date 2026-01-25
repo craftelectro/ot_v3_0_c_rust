@@ -1,5 +1,92 @@
 menu "OpenThread CLI Example"
 
+    config OT_ROLE_CONTROLLER
+        bool "Controller role (has mode switch)"
+        default n
+        help
+            Enable when this node is the controller with a mode switch.
+
+    config OT_HAS_TFMINI
+        bool "TFmini sensor present"
+        default y
+        help
+            Enable TFmini sensor support on this node.
+
+    config OT_PIN_RELAY
+        int "Relay GPIO"
+        range 0 48
+        default 4
+
+    config OT_PIN_SW_A
+        int "Mode switch GPIO A"
+        range 0 48
+        default 6
+
+    config OT_PIN_SW_B
+        int "Mode switch GPIO B"
+        range 0 48
+        default 7
+
+    config OT_PIN_RGB
+        int "RGB LED GPIO"
+        range 0 48
+        default 8
+
+    config OT_UART_TFMINI_RX
+        int "TFmini UART RX GPIO"
+        range -1 48
+        default 5
+
+    config OT_UART_TFMINI_TX
+        int "TFmini UART TX GPIO"
+        range -1 48
+        default -1
+
+    config OT_TFMINI_TRIGGER_CM
+        int "TFmini trigger threshold (cm)"
+        range 0 10000
+        default 165
+
+    config OT_TFMINI_RELEASE_CM
+        int "TFmini release threshold (cm)"
+        range 0 10000
+        default 170
+
+    config OT_ZONE_ID
+        int "Zone ID"
+        range 0 255
+        default 1
+
+    config OT_AUTO_HOLD_MS
+        int "Auto-hold duration (ms)"
+        range 0 3600000
+        default 300000
+
+    config OT_CHANNEL
+        int "Thread channel"
+        range 11 26
+        default 15
+
+    config OT_PANID
+        hex "Thread PAN ID"
+        default 0x1234
+
+    config OT_EXT_PANID
+        string "Thread Extended PAN ID (16 hex chars)"
+        default "DEADBEEF00000001"
+        help
+            8 bytes as 16 hex characters (optionally with separators).
+
+    config OT_NETWORK_KEY
+        string "Thread network key (32 hex chars)"
+        default "112233445566778899AABBCCDDEEFF00"
+        help
+            16 bytes as 32 hex characters (optionally with separators).
+
+    config OT_NETWORK_NAME
+        string "Thread network name"
+        default "WAREHOUSE"
+
     config OPENTHREAD_AUTO_START
         bool 'Enable the automatic start mode.'
         default False
