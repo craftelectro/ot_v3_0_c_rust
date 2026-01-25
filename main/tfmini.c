@@ -3,8 +3,6 @@
 #include "config.h"
 #include "esp_log.h"
 
-static const char *TAG = "tfmini";
-
 esp_err_t tfmini_init(void)
 {
     uart_config_t cfg = {

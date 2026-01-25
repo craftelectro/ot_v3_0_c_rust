@@ -295,7 +295,11 @@ static void start_http_server(void)
 
 static void start_wifi_ap(void)
 {
-    ESP_ERROR_CHECK(esp_netif_create_default_wifi_ap());
+    esp_netif_t *netif = esp_netif_create_default_wifi_ap();
+    if (!netif) {
+        ESP_LOGE(TAG, "Failed to create default Wi-Fi AP netif");
+        return;
+    }
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 

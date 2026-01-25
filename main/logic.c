@@ -19,7 +19,6 @@
 #include "freertos/queue.h"
 
 
-static int64_t s_last_local_trigger_us = 0;
 static const char *TAG = "logic";
 static zone_state_t s_state;
 
