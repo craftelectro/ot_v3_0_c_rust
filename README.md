@@ -121,6 +121,19 @@ Done
 ```
 The second device has joined the Thread network as a router (or a child).
 
+## Wi-Fi Config Portal
+
+By default the firmware boots with the compiled defaults (see `main/config.h`). If no config is stored yet,
+the device starts a Wi-Fi SoftAP and local web UI so you can override the Thread dataset and runtime parameters.
+
+* SoftAP SSID: `ot-light-setup-XXYY` (last two bytes of MAC).
+* Open `http://192.168.4.1/` in a browser to edit settings.
+* The device reboots after saving.
+
+You can also force the portal on a controller by setting the mode switch to AUTO (both inputs high) at boot.
+You can also trigger the portal by pressing reset three times within ~5 seconds. The counter is stored in NVS
+and cleared after a short delay to avoid excessive writes.
+
 ## Extension commands
 
 You can refer to the [extension command](https://github.com/espressif/esp-thread-br/blob/main/components/esp_ot_cli_extension/README.md) about the extension commands.
@@ -129,4 +142,3 @@ The following examples are supported by `ot_cli`:
 
 * TCP and UDP Example
 * Iperf Example
-
