@@ -131,7 +131,11 @@ the device starts a Wi-Fi SoftAP and local web UI so you can override the Thread
 * The device reboots after saving.
 
 You can also force the portal on a controller by setting the mode switch to AUTO (both inputs high) at boot.
+<<<<<<< HEAD
 You can also trigger the portal by pressing reset three times within ~15 seconds. The counter is stored in NVS
+=======
+You can also trigger the portal by pressing reset three times within ~5 seconds. The counter is stored in NVS
+>>>>>>> origin/codex/review-openthread-project-in-repository-2b98sm
 and cleared after a short delay to avoid excessive writes.
 
 ## Extension commands
