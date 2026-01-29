@@ -26,5 +26,5 @@ idf_component_register(
         "config_store.c"
         "config_portal.c"
     INCLUDE_DIRS "."
-    REQUIRES openthread nvs_flash driver esp_timer led_strip esp_netif vfs esp_wifi esp_http_server
+    REQUIRES openthread nvs_flash driver esp_timer led_strip esp_netif vfs esp_wifi esp_http_server rust_payload
 )
