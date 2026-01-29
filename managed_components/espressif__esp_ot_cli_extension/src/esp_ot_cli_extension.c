@@ -1,3 +1,6 @@
+#include <openthread/cli.h>
+#include <openthread/ip6.h>
+#include <openthread/ip6.h>
 /*
  * SPDX-FileCopyrightText: 2021-2022 Espressif Systems (Shanghai) CO LTD
  *
@@ -18,16 +21,45 @@
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
 #include "openthread/cli.h"
+#include <openthread/ip6.h>
+#include <openthread/ip6.h>
+#include "logic_api.h"
+
 
 void logic_cli_print_state(void);
 
-static void esp_ot_process_logic_state(void *aContext, uint8_t aArgsLength, char *aArgs[])
+// static void esp_ot_process_logic_state(void *aContext, uint8_t aArgsLength, char *aArgs[])
+// {
+//     (void)aContext;
+//     (void)aArgsLength;
+//     (void)aArgs;
+//     logic_cli_print_state();
+// }
+
+static otError esp_ot_process_logic_state(void *aContext, uint8_t aArgsLength, char *aArgs[])
 {
     (void)aContext;
     (void)aArgsLength;
     (void)aArgs;
-    logic_cli_print_state();
+
+    uint32_t epoch = 0;
+    otIp6Address owner;
+    uint32_t rem_ms = 0;
+    bool active = false;
+
+    logic_build_state(&epoch, &owner, &rem_ms, &active);
+
+    otCliOutputFormat("epoch=%lu active=%u rem_ms=%lu owner=", (unsigned long)epoch, active ? 1 : 0, (unsigned long)rem_ms);
+    {
+    char ip6buf[OT_IP6_ADDRESS_STRING_SIZE];
+    otIp6AddressToString(&owner, ip6buf, sizeof(ip6buf));
+    otCliOutputFormat("%s", ip6buf);
 }
+otCliOutputFormat("\r\n");
+
+    return OT_ERROR_NONE;
+}
+
 
 static const otCliCommand kCommands[] = {
 #if CONFIG_OPENTHREAD_CLI_SOCKET
