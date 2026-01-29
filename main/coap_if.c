@@ -262,14 +262,12 @@ static void on_state_rsp(void *ctx, otMessage *msg, const otMessageInfo *info)
     if (!parsed.has_epoch) return;
     if (!parsed.has_active) return;
 
-    uint32_t epoch = parsed.epoch;
-    uint32_t rem_ms = parsed.has_rem_ms ? parsed.rem_ms : 0;
-    bool active = (parsed.active != 0);
     otIp6Address owner;
     if (!parse_ip_kv(buf, "o", &owner)) memset(&owner, 0, sizeof(owner));
 
-    // logic_on_state_response(epoch, &owner, rem_ms, active);
-    logic_post_state_response(epoch, &owner, rem_ms, active);
+    if (!logic_post_parsed(LOGIC_PARSED_STATE_RSP, &parsed, &owner, true)) {
+        return;
+    }
 
     send_ok(msg, info);
 }
@@ -285,19 +283,19 @@ static void on_trigger(void *ctx, otMessage *msg, const otMessageInfo *info)
     if (!rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed)) {
         return;
     }
-    if (!parsed.has_epoch) {
+    if (!logic_post_parsed(LOGIC_PARSED_TRIGGER, &parsed, &info->mPeerAddr, true)) {
         return;
     }
-    uint32_t epoch = parsed.epoch;
-    uint32_t rem_ms = parsed.has_rem_ms ? parsed.rem_ms : config_store_get()->auto_hold_ms;
 
     // ACK только для CON, для NON ничего не отвечаем
     coap_send_empty_ack(msg, info);
 
-    ESP_LOGI(TAG, "RX trigger from peer, epoch=%lu rem_ms=%lu",
-             (unsigned long)epoch, (unsigned long)rem_ms);
+    if (parsed.has_epoch) {
+        uint32_t rem_ms = parsed.has_rem_ms ? parsed.rem_ms : config_store_get()->auto_hold_ms;
+        ESP_LOGI(TAG, "RX trigger from peer, epoch=%lu rem_ms=%lu",
+                 (unsigned long)parsed.epoch, (unsigned long)rem_ms);
+    }
 
-    logic_post_trigger_rx(epoch, &info->mPeerAddr, rem_ms);
     // logic_post_state_response(epoch, &owner, rem_ms, active);
 
 
@@ -316,13 +314,13 @@ static void on_off(void *ctx, otMessage *msg, const otMessageInfo *info)
     if (!rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed)) {
         return;
     }
-    if (!parsed.has_epoch) return;
-    uint32_t epoch = parsed.epoch;
+    if (!logic_post_parsed(LOGIC_PARSED_OFF, &parsed, NULL, true)) {
+        return;
+    }
 
-    ESP_LOGI(TAG, "RX off epoch=%lu", (unsigned long)epoch);
-
-    // logic_on_off_rx(epoch);
-    logic_post_off_rx(epoch);
+    if (parsed.has_epoch) {
+        ESP_LOGI(TAG, "RX off epoch=%lu", (unsigned long)parsed.epoch);
+    }
 
     send_ok(msg, info);
 }
@@ -351,50 +349,16 @@ static void on_mode_set(void *ctx, otMessage *msg, const otMessageInfo *info)
         return;
     }
 
-    uint32_t clr = parsed.clr;
-    bool has_clr = (parsed.has_clr != 0);
-
-    uint32_t m = parsed.m;
-    bool has_m = (parsed.has_m != 0);
-
-    uint32_t z = parsed.z;
-    bool has_z = (parsed.has_z != 0);
-
     // Определяем multicast по адресу, на который прилетело (local sockaddr)
     // Для multicast IPv6 первый байт = 0xFF.
     // bool is_multicast = (info->mSockAddr.mAddress.mFields.m8[0] == 0xFF);
     bool is_multicast = (info->mSockAddr.mFields.m8[0] == 0xFF);
 
-
-    if (has_clr) {
-        if (!is_multicast) {
-            logic_post_mode_clear_node();
-        } else if (has_z) {
-            logic_post_mode_clear_zone((uint8_t)z);
-        } else {
-            logic_post_mode_clear_global();
-        }
-        send_ok(msg, info);
+    if (!logic_post_parsed(LOGIC_PARSED_MODE, &parsed, NULL, is_multicast)) {
         return;
     }
 
-    if (has_m) {
-        if (m > 2) return;
-        light_mode_t mode = (light_mode_t)m;
-
-        if (!is_multicast) {
-            logic_post_mode_cmd_node(mode);             // точечно (unicast)
-        } else if (has_z) {
-            logic_post_mode_cmd_zone((uint8_t)z, mode); // по зоне
-        } else {
-            logic_post_mode_cmd_global(mode);           // глобально
-        }
-
-        send_ok(msg, info);
-        return;
-    }
-
-    // если ни clr ни m — игнор
+    send_ok(msg, info);
 }
 
 

@@ -5,6 +5,7 @@
 
 #include "rgb_led.h"          // light_mode_t
 #include <openthread/ip6.h>   // otIp6Address
+#include "rust_payload.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,6 +41,18 @@ void logic_set_mode(light_mode_t mode);
 bool logic_is_owner(void);
 
 void logic_cli_print_state(void);
+
+typedef enum {
+    LOGIC_PARSED_STATE_RSP,
+    LOGIC_PARSED_TRIGGER,
+    LOGIC_PARSED_OFF,
+    LOGIC_PARSED_MODE,
+} logic_parsed_kind_t;
+
+bool logic_post_parsed(logic_parsed_kind_t kind,
+                       const rust_parsed_t *parsed,
+                       const otIp6Address *peer_addr,
+                       bool is_multicast);
 
 // собрать состояние зоны для ответов state_rsp
 void logic_build_state(uint32_t *epoch,

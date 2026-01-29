@@ -5,6 +5,7 @@
 #include "tfmini.h"
 #include "coap_if.h"
 #include "config_store.h"
+#include "rust_payload.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -268,6 +269,89 @@ void logic_cli_print_state(void)
                       fsm,
                       (unsigned)mode,
                       owner_str);
+}
+
+bool logic_post_parsed(logic_parsed_kind_t kind,
+                       const rust_parsed_t *parsed,
+                       const otIp6Address *peer_addr,
+                       bool is_multicast)
+{
+    if (!parsed) {
+        return false;
+    }
+
+    int epoch = parsed->has_epoch ? (int)parsed->epoch : -1;
+    int rem_ms = parsed->has_rem_ms ? (int)parsed->rem_ms : -1;
+    int active = parsed->has_active ? (int)parsed->active : -1;
+    int mode = parsed->has_m ? (int)parsed->m : (parsed->has_mode ? (int)parsed->mode : -1);
+
+    ESP_LOGI(TAG, "parsed: epoch=%d rem_ms=%d active=%d mode=%d",
+             epoch, rem_ms, active, mode);
+
+    switch (kind) {
+        case LOGIC_PARSED_STATE_RSP: {
+            if (!parsed->has_epoch || !parsed->has_active) {
+                return false;
+            }
+            uint32_t remaining_ms = parsed->has_rem_ms ? parsed->rem_ms : 0;
+            bool is_active = (parsed->active != 0);
+            otIp6Address owner = {0};
+            if (peer_addr) {
+                owner = *peer_addr;
+            }
+            logic_post_state_response(parsed->epoch, &owner, remaining_ms, is_active);
+            return true;
+        }
+        case LOGIC_PARSED_TRIGGER: {
+            if (!parsed->has_epoch) {
+                return false;
+            }
+            uint32_t rem = parsed->has_rem_ms ? parsed->rem_ms : config_store_get()->auto_hold_ms;
+            otIp6Address src = {0};
+            if (peer_addr) {
+                src = *peer_addr;
+            }
+            logic_post_trigger_rx(parsed->epoch, &src, rem);
+            return true;
+        }
+        case LOGIC_PARSED_OFF: {
+            if (!parsed->has_epoch) {
+                return false;
+            }
+            logic_post_off_rx(parsed->epoch);
+            return true;
+        }
+        case LOGIC_PARSED_MODE: {
+            if (parsed->has_clr) {
+                if (!is_multicast) {
+                    logic_post_mode_clear_node();
+                } else if (parsed->has_z) {
+                    logic_post_mode_clear_zone((uint8_t)parsed->z);
+                } else {
+                    logic_post_mode_clear_global();
+                }
+                return true;
+            }
+            if (parsed->has_m || parsed->has_mode) {
+                uint32_t m = parsed->has_m ? parsed->m : parsed->mode;
+                if (m > 2) {
+                    return false;
+                }
+                light_mode_t mode_val = (light_mode_t)m;
+                if (!is_multicast) {
+                    logic_post_mode_cmd_node(mode_val);
+                } else if (parsed->has_z) {
+                    logic_post_mode_cmd_zone((uint8_t)parsed->z, mode_val);
+                } else {
+                    logic_post_mode_cmd_global(mode_val);
+                }
+                return true;
+            }
+            return false;
+        }
+        default:
+            return false;
+    }
 }
 
 static fsm_state_t fsm_from_state(const logic_state_t *state, int64_t now)
