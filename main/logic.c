@@ -66,6 +66,8 @@ typedef enum {
     EVT_LOCAL_MODE_SET,
     EVT_LOCAL_TRIGGER,
     EVT_TICK,
+    EVT_ENTER_PENDING_RESTORE,
+    EVT_COLD_BOOT,
 
 } logic_evt_type_t;
 
@@ -113,10 +115,10 @@ static void logic_queue_send(const logic_evt_t *e)
 #define NVS_K_NMODE        "n_mode"
 
 
-static void set_relay(bool on)
+static void set_relay(logic_state_t *state, bool on)
 {
     io_board_set_relay(on);
-    s_state.zone.relay_on = on;
+    state->zone.relay_on = on;
 }
 
 static void state_clear_active(logic_state_t *state)
@@ -234,6 +236,8 @@ static const char *event_name(logic_evt_type_t event)
         case EVT_LOCAL_MODE_SET: return "LOCAL_MODE_SET";
         case EVT_LOCAL_TRIGGER: return "LOCAL_TRIGGER";
         case EVT_TICK: return "TICK";
+        case EVT_ENTER_PENDING_RESTORE: return "ENTER_PENDING_RESTORE";
+        case EVT_COLD_BOOT: return "COLD_BOOT";
         default: return "UNKNOWN";
     }
 }
@@ -485,6 +489,21 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
             fsm_sync(state, now);
         } break;
 
+        case EVT_ENTER_PENDING_RESTORE:
+            state->zone.pending_restore = true;
+            state->restore_deadline_us = now + (int64_t)RESTORE_WAIT_MS * 1000;
+            state->next_state_req_us = now;
+            fsm_sync(state, now);
+            break;
+
+        case EVT_COLD_BOOT:
+            state_clear_active(state);
+            state->zone.owner_valid = false;
+            state->zone.pending_restore = false;
+            actions.save_nvs = true;
+            fsm_sync(state, now);
+            break;
+
         case EVT_TICK: {
             if (state->zone.pending_restore) {
                 if (now >= state->next_state_req_us) {
@@ -492,7 +511,10 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
                     state->next_state_req_us = now + 1000 * 1000;
                 }
                 if (state->restore_deadline_us && now > state->restore_deadline_us) {
-                    state->restore_deadline_us = now + (int64_t)RESTORE_WAIT_MS * 1000;
+                    state_clear_active(state);
+                    state->zone.pending_restore = false;
+                    actions.save_nvs = true;
+                    fsm_sync(state, now);
                 }
             }
 
@@ -529,13 +551,13 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
     return actions;
 }
 
-static void apply_actions(const logic_state_t *state, const fsm_actions_t *actions)
+static void apply_actions(logic_state_t *state, const fsm_actions_t *actions)
 {
     if (actions->update_led) {
         rgb_set_mode_color(effective_mode(state));
     }
     if (actions->set_relay) {
-        set_relay(actions->relay_on);
+        set_relay(state, actions->relay_on);
     }
     if (actions->send_state_req) {
         if (coap_if_thread_ready()) {
@@ -723,20 +745,6 @@ static void nvs_load_all(light_mode_t def_mode)
              (unsigned)owner_ok,
              (unsigned long)epoch);
 
-    // <<< ВОТ ЭТО ДОБАВЬ >>>
-    esp_reset_reason_t rr = esp_reset_reason();
-    if (rr == ESP_RST_POWERON || rr == ESP_RST_BROWNOUT) {
-        ESP_LOGW(TAG, "cold boot (%d) -> ignore stored active/owner/timer", (int)rr);
-
-        // Сбрасываем "воскрешаемое" состояние
-        clear_active();                 // active=false, relay off, deadline=0 и т.п. (как у тебя реализовано)
-        s_state.zone.owner_valid = false;
-        s_state.zone.epoch = 0;
-        s_state.zone.pending_restore = false;
-
-        // ВАЖНО: сразу перезаписать NVS, иначе другой узел может ответить state_rsp из старого active=1
-        nvs_save_all();
-    }
 }
 
 
@@ -770,7 +778,11 @@ void logic_build_state(uint32_t *epoch, otIp6Address *owner, uint32_t *rem_ms, b
     int64_t now = esp_timer_get_time();
 
     *epoch = s_state.zone.epoch;
-    *owner = s_state.zone.owner_addr;
+    if (s_state.zone.owner_valid) {
+        *owner = s_state.zone.owner_addr;
+    } else {
+        memset(owner, 0, sizeof(*owner));
+    }
 
     // если мы в strict-restore режиме — не утверждаем active наружу
     if (s_state.zone.pending_restore) {
@@ -1138,16 +1150,24 @@ static void logic_task(void *arg)
         ESP_LOGW(TAG, "boot: thread not ready -> defer state_req");
     }
 
+    // cold boot handling (do not reset epoch)
+    int64_t now = esp_timer_get_time();
+    esp_reset_reason_t rr = esp_reset_reason();
+    if (rr == ESP_RST_POWERON || rr == ESP_RST_BROWNOUT) {
+        logic_evt_t cold = {.type = EVT_COLD_BOOT};
+        fsm_actions_t cold_actions = step(&s_state, &cold, now);
+        apply_actions(&s_state, &cold_actions);
+    }
+
     // strict restore: если думали что active — не включаем, ждём state_rsp
     // ВАЖНО: проверяем по effective_mode(), а не по s_state.mode
-    int64_t now = esp_timer_get_time();
     if (effective_mode(&s_state) == MODE_AUTO &&
         s_state.zone.active &&
         s_state.zone.deadline_us > now) {
 
-        s_state.zone.pending_restore = true;
-        s_state.restore_deadline_us = now + (int64_t)RESTORE_WAIT_MS * 1000;
-
+        logic_evt_t enter = {.type = EVT_ENTER_PENDING_RESTORE};
+        fsm_actions_t enter_actions = step(&s_state, &enter, now);
+        apply_actions(&s_state, &enter_actions);
         ESP_LOGI(TAG, "restore(strict): state_req sent, stay OFF until state_rsp");
     } else {
         if (s_state.zone.active) {
