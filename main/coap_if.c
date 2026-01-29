@@ -2,6 +2,7 @@
 #include "logic.h"
 #include "config.h"
 #include "config_store.h"
+#include "rust_payload.h"
 
 #include "esp_openthread_lock.h"
 #include "esp_log.h"
@@ -12,7 +13,6 @@
 
 #include <string.h>
 #include <stdio.h>
-#include <stdlib.h>
 
 #include <openthread/thread.h>
 
@@ -103,31 +103,6 @@ static void coap_send_empty_ack(otMessage *req, const otMessageInfo *req_info)
 }
 
 
-
-static bool parse_u32_kv(const char *s, const char *key, uint32_t *out)
-{
-    // ищем "key="
-    const char *p = strstr(s, key);
-    if (!p) return false;
-    p += strlen(key);
-    if (*p != '=') return false;
-    p++;
-
-    char *end = NULL;
-    unsigned long v = strtoul(p, &end, 10);
-    if (end == p) return false;
-
-    *out = (uint32_t)v;
-    return true;
-}
-
-static bool parse_bool_kv(const char *s, const char *key, bool *out)
-{
-    uint32_t v = 0;
-    if (!parse_u32_kv(s, key, &v)) return false;
-    *out = (v != 0);
-    return true;
-}
 
 static bool parse_ip_kv(const char *s, const char *key, otIp6Address *out)
 {
@@ -277,20 +252,22 @@ static void on_state_rsp(void *ctx, otMessage *msg, const otMessageInfo *info)
     (void)info;
 
     char buf[160];
-    read_payload(msg, buf, sizeof(buf));
+    int len = read_payload(msg, buf, sizeof(buf));
 
     // формат: e=123;a=1;r=600000;o=fdde:....
-    uint32_t epoch = 0, rem_ms = 0;
-    bool active = false;
-    otIp6Address owner;
+    rust_parsed_t parsed = {0};
+    if (!rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed)) {
+        return;
+    }
+    if (!parsed.has_epoch) return;
+    if (!parsed.has_active) return;
 
-    if (!parse_u32_kv(buf, "e", &epoch)) return;
-    if (!parse_bool_kv(buf, "a", &active)) return;
-    if (!parse_u32_kv(buf, "r", &rem_ms)) rem_ms = 0;
+    otIp6Address owner;
     if (!parse_ip_kv(buf, "o", &owner)) memset(&owner, 0, sizeof(owner));
 
-    // logic_on_state_response(epoch, &owner, rem_ms, active);
-    logic_post_state_response(epoch, &owner, rem_ms, active);
+    if (!logic_post_parsed(LOGIC_PARSED_STATE_RSP, &parsed, &owner, true)) {
+        return;
+    }
 
     send_ok(msg, info);
 }
@@ -300,33 +277,25 @@ static void on_trigger(void *ctx, otMessage *msg, const otMessageInfo *info)
     (void)ctx;
 
     char buf[96];
-    read_payload(msg, buf, sizeof(buf));
+    int len = read_payload(msg, buf, sizeof(buf));
 
-    uint32_t epoch = 0;
-    uint32_t rem_ms = 0;
-
-    // epoch: новый ключ epoch= , fallback legacy e=
-    if (!parse_u32_kv(buf, "epoch", &epoch)) {
-        if (!parse_u32_kv(buf, "e", &epoch)) {
-            // нет epoch вообще — игнор
-            return;
-        }
+    rust_parsed_t parsed = {0};
+    if (!rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed)) {
+        return;
     }
-
-    // rem_ms: новый ключ rem_ms= , fallback legacy h=
-    if (!parse_u32_kv(buf, "rem_ms", &rem_ms)) {
-        if (!parse_u32_kv(buf, "h", &rem_ms)) {
-            rem_ms = config_store_get()->auto_hold_ms;
-        }
+    if (!logic_post_parsed(LOGIC_PARSED_TRIGGER, &parsed, &info->mPeerAddr, true)) {
+        return;
     }
 
     // ACK только для CON, для NON ничего не отвечаем
     coap_send_empty_ack(msg, info);
 
-    ESP_LOGI(TAG, "RX trigger from peer, epoch=%lu rem_ms=%lu",
-             (unsigned long)epoch, (unsigned long)rem_ms);
+    if (parsed.has_epoch) {
+        uint32_t rem_ms = parsed.has_rem_ms ? parsed.rem_ms : config_store_get()->auto_hold_ms;
+        ESP_LOGI(TAG, "RX trigger from peer, epoch=%lu rem_ms=%lu",
+                 (unsigned long)parsed.epoch, (unsigned long)rem_ms);
+    }
 
-    logic_post_trigger_rx(epoch, &info->mPeerAddr, rem_ms);
     // logic_post_state_response(epoch, &owner, rem_ms, active);
 
 
@@ -339,15 +308,19 @@ static void on_off(void *ctx, otMessage *msg, const otMessageInfo *info)
     (void)ctx;
 
     char buf[64];
-    read_payload(msg, buf, sizeof(buf));
+    int len = read_payload(msg, buf, sizeof(buf));
 
-    uint32_t epoch = 0;
-    if (!parse_u32_kv(buf, "e", &epoch)) return;
+    rust_parsed_t parsed = {0};
+    if (!rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed)) {
+        return;
+    }
+    if (!logic_post_parsed(LOGIC_PARSED_OFF, &parsed, NULL, true)) {
+        return;
+    }
 
-    ESP_LOGI(TAG, "RX off epoch=%lu", (unsigned long)epoch);
-
-    // logic_on_off_rx(epoch);
-    logic_post_off_rx(epoch);
+    if (parsed.has_epoch) {
+        ESP_LOGI(TAG, "RX off epoch=%lu", (unsigned long)parsed.epoch);
+    }
 
     send_ok(msg, info);
 }
@@ -366,56 +339,26 @@ static void on_mode_set(void *ctx, otMessage *msg, const otMessageInfo *info)
     (void)ctx;
 
     char buf[128];
-    read_payload(msg, buf, sizeof(buf));
+    int len = read_payload(msg, buf, sizeof(buf));
 
     ESP_LOGI(TAG, "RX /mode from %x.. payload='%s' sock0=%02x",
          info->mPeerAddr.mFields.m8[15], buf, info->mSockAddr.mFields.m8[0]);
 
-
-    uint32_t clr = 0;
-    bool has_clr = parse_u32_kv(buf, "clr", &clr);
-
-    uint32_t m = 0;
-    bool has_m = parse_u32_kv(buf, "m", &m);
-
-    uint32_t z = 0;
-    bool has_z = parse_u32_kv(buf, "z", &z);
+    rust_parsed_t parsed = {0};
+    if (!rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed)) {
+        return;
+    }
 
     // Определяем multicast по адресу, на который прилетело (local sockaddr)
     // Для multicast IPv6 первый байт = 0xFF.
     // bool is_multicast = (info->mSockAddr.mAddress.mFields.m8[0] == 0xFF);
     bool is_multicast = (info->mSockAddr.mFields.m8[0] == 0xFF);
 
-
-    if (has_clr) {
-        if (!is_multicast) {
-            logic_post_mode_clear_node();
-        } else if (has_z) {
-            logic_post_mode_clear_zone((uint8_t)z);
-        } else {
-            logic_post_mode_clear_global();
-        }
-        send_ok(msg, info);
+    if (!logic_post_parsed(LOGIC_PARSED_MODE, &parsed, NULL, is_multicast)) {
         return;
     }
 
-    if (has_m) {
-        if (m > 2) return;
-        light_mode_t mode = (light_mode_t)m;
-
-        if (!is_multicast) {
-            logic_post_mode_cmd_node(mode);             // точечно (unicast)
-        } else if (has_z) {
-            logic_post_mode_cmd_zone((uint8_t)z, mode); // по зоне
-        } else {
-            logic_post_mode_cmd_global(mode);           // глобально
-        }
-
-        send_ok(msg, info);
-        return;
-    }
-
-    // если ни clr ни m — игнор
+    send_ok(msg, info);
 }
 
 

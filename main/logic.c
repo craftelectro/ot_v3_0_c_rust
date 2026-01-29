@@ -5,6 +5,7 @@
 #include "tfmini.h"
 #include "coap_if.h"
 #include "config_store.h"
+#include "rust_payload.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -17,6 +18,7 @@
 #include "esp_system.h"   // esp_reset_reason()
 
 #include "freertos/queue.h"
+#include "openthread/cli.h"
 
 
 static const char *TAG = "logic";
@@ -45,6 +47,18 @@ typedef struct {
     int64_t restore_deadline_us;
     int64_t next_state_req_us;
     int64_t last_local_trigger_us;
+    bool nvs_dirty;
+    uint64_t nvs_next_flush_us;
+    bool last_trigger_valid;
+    uint32_t last_trigger_epoch;
+    otIp6Address last_trigger_addr;
+    uint32_t last_trigger_rem_ms;
+    int64_t last_trigger_time_us;
+    bool last_state_rsp_valid;
+    uint32_t last_state_rsp_epoch;
+    otIp6Address last_state_rsp_addr;
+    uint32_t last_state_rsp_rem_ms;
+    int64_t last_state_rsp_time_us;
 } logic_state_t;
 
 static logic_state_t s_state;
@@ -102,6 +116,9 @@ static void logic_queue_send(const logic_evt_t *e)
 #define NVS_K_OWNER_ADDR "owner_addr"
 
 #define RESTORE_WAIT_MS  1200  // ждать state_rsp после ребута (strict)
+#define NVS_DEBOUNCE_US  (5 * 1000 * 1000)
+#define RX_DEDUP_WINDOW_US (2 * 1000 * 1000)
+#define RX_DEDUP_MIN_DIFF_MS 300
 
 // ===== NVS keys for MODE overrides (persistent) =====
 #define NVS_K_GMODE_VALID  "g_valid"
@@ -204,6 +221,7 @@ typedef struct {
     bool send_off;
     uint32_t off_epoch;
     bool log_transition;
+    bool flush_nvs_now;
     fsm_state_t from_state;
     fsm_state_t to_state;
     logic_evt_type_t event;
@@ -239,6 +257,112 @@ static const char *event_name(logic_evt_type_t event)
         case EVT_ENTER_PENDING_RESTORE: return "ENTER_PENDING_RESTORE";
         case EVT_COLD_BOOT: return "COLD_BOOT";
         default: return "UNKNOWN";
+    }
+}
+
+void logic_cli_print_state(void)
+{
+    uint32_t epoch = 0;
+    uint32_t rem_ms = 0;
+    bool active = false;
+    otIp6Address owner;
+    logic_build_state(&epoch, &owner, &rem_ms, &active);
+
+    char owner_str[OT_IP6_ADDRESS_STRING_SIZE];
+    otIp6AddressToString(&owner, owner_str, sizeof(owner_str));
+
+    light_mode_t mode = effective_mode(&s_state);
+    const char *fsm = fsm_state_name(s_state.fsm);
+
+    otCliOutputFormat("epoch=%lu active=%u rem_ms=%lu fsm=%s mode=%u owner=%s\r\n",
+                      (unsigned long)epoch,
+                      active ? 1u : 0u,
+                      (unsigned long)rem_ms,
+                      fsm,
+                      (unsigned)mode,
+                      owner_str);
+}
+
+bool logic_post_parsed(logic_parsed_kind_t kind,
+                       const rust_parsed_t *parsed,
+                       const otIp6Address *peer_addr,
+                       bool is_multicast)
+{
+    if (!parsed) {
+        return false;
+    }
+
+    int epoch = parsed->has_epoch ? (int)parsed->epoch : -1;
+    int rem_ms = parsed->has_rem_ms ? (int)parsed->rem_ms : -1;
+    int active = parsed->has_active ? (int)parsed->active : -1;
+    int mode = parsed->has_m ? (int)parsed->m : (parsed->has_mode ? (int)parsed->mode : -1);
+
+    ESP_LOGI(TAG, "parsed: epoch=%d rem_ms=%d active=%d mode=%d",
+             epoch, rem_ms, active, mode);
+
+    switch (kind) {
+        case LOGIC_PARSED_STATE_RSP: {
+            if (!parsed->has_epoch || !parsed->has_active) {
+                return false;
+            }
+            uint32_t remaining_ms = parsed->has_rem_ms ? parsed->rem_ms : 0;
+            bool is_active = (parsed->active != 0);
+            otIp6Address owner = {0};
+            if (peer_addr) {
+                owner = *peer_addr;
+            }
+            logic_post_state_response(parsed->epoch, &owner, remaining_ms, is_active);
+            return true;
+        }
+        case LOGIC_PARSED_TRIGGER: {
+            if (!parsed->has_epoch) {
+                return false;
+            }
+            uint32_t rem = parsed->has_rem_ms ? parsed->rem_ms : config_store_get()->auto_hold_ms;
+            otIp6Address src = {0};
+            if (peer_addr) {
+                src = *peer_addr;
+            }
+            logic_post_trigger_rx(parsed->epoch, &src, rem);
+            return true;
+        }
+        case LOGIC_PARSED_OFF: {
+            if (!parsed->has_epoch) {
+                return false;
+            }
+            logic_post_off_rx(parsed->epoch);
+            return true;
+        }
+        case LOGIC_PARSED_MODE: {
+            if (parsed->has_clr) {
+                if (!is_multicast) {
+                    logic_post_mode_clear_node();
+                } else if (parsed->has_z) {
+                    logic_post_mode_clear_zone((uint8_t)parsed->z);
+                } else {
+                    logic_post_mode_clear_global();
+                }
+                return true;
+            }
+            if (parsed->has_m || parsed->has_mode) {
+                uint32_t m = parsed->has_m ? parsed->m : parsed->mode;
+                if (m > 2) {
+                    return false;
+                }
+                light_mode_t mode_val = (light_mode_t)m;
+                if (!is_multicast) {
+                    logic_post_mode_cmd_node(mode_val);
+                } else if (parsed->has_z) {
+                    logic_post_mode_cmd_zone((uint8_t)parsed->z, mode_val);
+                } else {
+                    logic_post_mode_cmd_global(mode_val);
+                }
+                return true;
+            }
+            return false;
+        }
+        default:
+            return false;
     }
 }
 
@@ -360,6 +484,21 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
         } break;
 
         case EVT_STATE_RSP: {
+            int64_t delta_us = now - state->last_state_rsp_time_us;
+            if (state->last_state_rsp_valid &&
+                event->epoch == state->last_state_rsp_epoch &&
+                addr_eq(&event->addr, &state->last_state_rsp_addr) &&
+                delta_us >= 0 && delta_us < RX_DEDUP_WINDOW_US) {
+                uint32_t last_rem = state->last_state_rsp_rem_ms;
+                uint32_t rem = event->u32;
+                uint32_t diff = (last_rem > rem) ? (last_rem - rem) : (rem - last_rem);
+                if (diff < RX_DEDUP_MIN_DIFF_MS) {
+                    ESP_LOGD(TAG, "RX state_rsp duplicate ignored epoch=%lu rem_ms=%lu",
+                             (unsigned long)event->epoch, (unsigned long)event->u32);
+                    return actions;
+                }
+            }
+
             if (event->epoch < state->zone.epoch) {
                 break;
             }
@@ -414,10 +553,30 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
             }
 
             actions.save_nvs = true;
+            state->last_state_rsp_valid = true;
+            state->last_state_rsp_epoch = event->epoch;
+            state->last_state_rsp_addr = event->addr;
+            state->last_state_rsp_rem_ms = event->u32;
+            state->last_state_rsp_time_us = now;
             fsm_sync(state, now);
         } break;
 
         case EVT_TRIGGER_RX: {
+            int64_t delta_us = now - state->last_trigger_time_us;
+            if (state->last_trigger_valid &&
+                event->epoch == state->last_trigger_epoch &&
+                addr_eq(&event->addr, &state->last_trigger_addr) &&
+                delta_us >= 0 && delta_us < RX_DEDUP_WINDOW_US) {
+                uint32_t last_rem = state->last_trigger_rem_ms;
+                uint32_t rem = event->u32;
+                uint32_t diff = (last_rem > rem) ? (last_rem - rem) : (rem - last_rem);
+                if (diff < RX_DEDUP_MIN_DIFF_MS) {
+                    ESP_LOGD(TAG, "RX trigger duplicate ignored epoch=%lu rem_ms=%lu",
+                             (unsigned long)event->epoch, (unsigned long)event->u32);
+                    return actions;
+                }
+            }
+
             if (event->epoch < state->zone.epoch) {
                 break;
             }
@@ -444,6 +603,11 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
             state->zone.deadline_us = new_deadline_us;
             state->zone.pending_restore = false;
             actions.save_nvs = true;
+            state->last_trigger_valid = true;
+            state->last_trigger_epoch = event->epoch;
+            state->last_trigger_addr = event->addr;
+            state->last_trigger_rem_ms = event->u32;
+            state->last_trigger_time_us = now;
             fsm_sync(state, now);
         } break;
 
@@ -500,7 +664,7 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
             state_clear_active(state);
             state->zone.owner_valid = false;
             state->zone.pending_restore = false;
-            actions.save_nvs = true;
+            actions.flush_nvs_now = true;
             fsm_sync(state, now);
             break;
 
@@ -513,7 +677,7 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
                 if (state->restore_deadline_us && now > state->restore_deadline_us) {
                     state_clear_active(state);
                     state->zone.pending_restore = false;
-                    actions.save_nvs = true;
+                    actions.flush_nvs_now = true;
                     fsm_sync(state, now);
                 }
             }
@@ -527,6 +691,11 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
                 state_clear_active(state);
                 actions.save_nvs = true;
                 fsm_sync(state, now);
+            }
+
+            if (state->nvs_dirty && state->nvs_next_flush_us &&
+                (uint64_t)now >= state->nvs_next_flush_us) {
+                actions.flush_nvs_now = true;
             }
 
             actions.set_relay = true;
@@ -553,6 +722,8 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
 
 static void apply_actions(logic_state_t *state, const fsm_actions_t *actions)
 {
+    uint64_t now_us = (uint64_t)esp_timer_get_time();
+
     if (actions->update_led) {
         rgb_set_mode_color(effective_mode(state));
     }
@@ -570,8 +741,20 @@ static void apply_actions(logic_state_t *state, const fsm_actions_t *actions)
     if (actions->send_off) {
         coap_if_send_off(actions->off_epoch);
     }
-    if (actions->save_nvs) {
+    if (actions->flush_nvs_now) {
+        ESP_LOGI(TAG, "NVS flush");
         nvs_save_all();
+        state->nvs_dirty = false;
+        state->nvs_next_flush_us = 0;
+    } else if (actions->save_nvs) {
+        if (!state->nvs_dirty) {
+            state->nvs_dirty = true;
+            state->nvs_next_flush_us = now_us + NVS_DEBOUNCE_US;
+            ESP_LOGI(TAG, "NVS dirty, schedule flush in %lu ms",
+                     (unsigned long)(NVS_DEBOUNCE_US / 1000));
+        } else {
+            state->nvs_next_flush_us = now_us + NVS_DEBOUNCE_US;
+        }
     }
     if (actions->log_transition) {
         ESP_LOGI(TAG, "FSM %s -> %s on %s",
@@ -1173,7 +1356,8 @@ static void logic_task(void *arg)
         if (s_state.zone.active) {
             ESP_LOGI(TAG, "restore: invalid stored active -> clear");
             clear_active();
-            nvs_save_all();
+            fsm_actions_t flush_actions = {.flush_nvs_now = true};
+            apply_actions(&s_state, &flush_actions);
         }
     }
 

@@ -9,3 +9,6 @@ __pycache__/
 
 # VS Code
 .vscode/
+
+# Rust build artifacts
+components/rust_payload/rust/payload_parser/target/
