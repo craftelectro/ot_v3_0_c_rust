@@ -17,6 +17,7 @@
 #include "esp_system.h"   // esp_reset_reason()
 
 #include "freertos/queue.h"
+#include "openthread/cli.h"
 
 
 static const char *TAG = "logic";
@@ -240,6 +241,29 @@ static const char *event_name(logic_evt_type_t event)
         case EVT_COLD_BOOT: return "COLD_BOOT";
         default: return "UNKNOWN";
     }
+}
+
+void logic_cli_print_state(void)
+{
+    uint32_t epoch = 0;
+    uint32_t rem_ms = 0;
+    bool active = false;
+    otIp6Address owner;
+    logic_build_state(&epoch, &owner, &rem_ms, &active);
+
+    char owner_str[OT_IP6_ADDRESS_STRING_SIZE];
+    otIp6AddressToString(&owner, owner_str, sizeof(owner_str));
+
+    light_mode_t mode = effective_mode(&s_state);
+    const char *fsm = fsm_state_name(s_state.fsm);
+
+    otCliOutputFormat("epoch=%lu active=%u rem_ms=%lu fsm=%s mode=%u owner=%s\r\n",
+                      (unsigned long)epoch,
+                      active ? 1u : 0u,
+                      (unsigned long)rem_ms,
+                      fsm,
+                      (unsigned)mode,
+                      owner_str);
 }
 
 static fsm_state_t fsm_from_state(const logic_state_t *state, int64_t now)

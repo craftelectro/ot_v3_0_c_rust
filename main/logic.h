@@ -39,6 +39,8 @@ void logic_set_mode(light_mode_t mode);
 // true если текущий узел = owner (по owner_addr)
 bool logic_is_owner(void);
 
+void logic_cli_print_state(void);
+
 // собрать состояние зоны для ответов state_rsp
 void logic_build_state(uint32_t *epoch,
                        otIp6Address *owner,

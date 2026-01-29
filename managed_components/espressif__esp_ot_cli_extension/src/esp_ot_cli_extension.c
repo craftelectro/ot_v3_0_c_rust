@@ -19,6 +19,16 @@
 #include "freertos/task.h"
 #include "openthread/cli.h"
 
+void logic_cli_print_state(void);
+
+static void esp_ot_process_logic_state(void *aContext, uint8_t aArgsLength, char *aArgs[])
+{
+    (void)aContext;
+    (void)aArgsLength;
+    (void)aArgs;
+    logic_cli_print_state();
+}
+
 static const otCliCommand kCommands[] = {
 #if CONFIG_OPENTHREAD_CLI_SOCKET
     {"tcpsockserver", esp_ot_process_tcp_server},
@@ -42,7 +52,9 @@ static const otCliCommand kCommands[] = {
 #if CONFIG_OPENTHREAD_DNS64_CLIENT
     {"dns64server", esp_openthread_process_dns64_server},
 #endif // CONFIG_OPENTHREAD_DNS64_CLIENT
-    {"ip", esp_ot_process_ip}};
+    {"ip", esp_ot_process_ip},
+    {"logic", esp_ot_process_logic_state},
+};
 
 void esp_cli_custom_command_init()
 {
