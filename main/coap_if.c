@@ -326,8 +326,8 @@ static void on_trigger(void *ctx, otMessage *msg, const otMessageInfo *info)
     ESP_LOGI(TAG, "RX trigger from peer, epoch=%lu rem_ms=%lu",
              (unsigned long)epoch, (unsigned long)rem_ms);
 
-    logic_on_trigger_rx(epoch, &info->mPeerAddr, rem_ms);
-    // logic_post_state_response(epoch, &owner, rem_ms, active); 
+    logic_post_trigger_rx(epoch, &info->mPeerAddr, rem_ms);
+    // logic_post_state_response(epoch, &owner, rem_ms, active);
 
 
     // НЕ делать send_ok() здесь!
