@@ -49,6 +49,16 @@ typedef struct {
     int64_t last_local_trigger_us;
     bool nvs_dirty;
     uint64_t nvs_next_flush_us;
+    bool last_trigger_valid;
+    uint32_t last_trigger_epoch;
+    otIp6Address last_trigger_addr;
+    uint32_t last_trigger_rem_ms;
+    int64_t last_trigger_time_us;
+    bool last_state_rsp_valid;
+    uint32_t last_state_rsp_epoch;
+    otIp6Address last_state_rsp_addr;
+    uint32_t last_state_rsp_rem_ms;
+    int64_t last_state_rsp_time_us;
 } logic_state_t;
 
 static logic_state_t s_state;
@@ -107,6 +117,8 @@ static void logic_queue_send(const logic_evt_t *e)
 
 #define RESTORE_WAIT_MS  1200  // ждать state_rsp после ребута (strict)
 #define NVS_DEBOUNCE_US  (5 * 1000 * 1000)
+#define RX_DEDUP_WINDOW_US (2 * 1000 * 1000)
+#define RX_DEDUP_MIN_DIFF_MS 300
 
 // ===== NVS keys for MODE overrides (persistent) =====
 #define NVS_K_GMODE_VALID  "g_valid"
@@ -472,6 +484,21 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
         } break;
 
         case EVT_STATE_RSP: {
+            int64_t delta_us = now - state->last_state_rsp_time_us;
+            if (state->last_state_rsp_valid &&
+                event->epoch == state->last_state_rsp_epoch &&
+                addr_eq(&event->addr, &state->last_state_rsp_addr) &&
+                delta_us >= 0 && delta_us < RX_DEDUP_WINDOW_US) {
+                uint32_t last_rem = state->last_state_rsp_rem_ms;
+                uint32_t rem = event->u32;
+                uint32_t diff = (last_rem > rem) ? (last_rem - rem) : (rem - last_rem);
+                if (diff < RX_DEDUP_MIN_DIFF_MS) {
+                    ESP_LOGD(TAG, "RX state_rsp duplicate ignored epoch=%lu rem_ms=%lu",
+                             (unsigned long)event->epoch, (unsigned long)event->u32);
+                    return actions;
+                }
+            }
+
             if (event->epoch < state->zone.epoch) {
                 break;
             }
@@ -526,10 +553,30 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
             }
 
             actions.save_nvs = true;
+            state->last_state_rsp_valid = true;
+            state->last_state_rsp_epoch = event->epoch;
+            state->last_state_rsp_addr = event->addr;
+            state->last_state_rsp_rem_ms = event->u32;
+            state->last_state_rsp_time_us = now;
             fsm_sync(state, now);
         } break;
 
         case EVT_TRIGGER_RX: {
+            int64_t delta_us = now - state->last_trigger_time_us;
+            if (state->last_trigger_valid &&
+                event->epoch == state->last_trigger_epoch &&
+                addr_eq(&event->addr, &state->last_trigger_addr) &&
+                delta_us >= 0 && delta_us < RX_DEDUP_WINDOW_US) {
+                uint32_t last_rem = state->last_trigger_rem_ms;
+                uint32_t rem = event->u32;
+                uint32_t diff = (last_rem > rem) ? (last_rem - rem) : (rem - last_rem);
+                if (diff < RX_DEDUP_MIN_DIFF_MS) {
+                    ESP_LOGD(TAG, "RX trigger duplicate ignored epoch=%lu rem_ms=%lu",
+                             (unsigned long)event->epoch, (unsigned long)event->u32);
+                    return actions;
+                }
+            }
+
             if (event->epoch < state->zone.epoch) {
                 break;
             }
@@ -556,6 +603,11 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
             state->zone.deadline_us = new_deadline_us;
             state->zone.pending_restore = false;
             actions.save_nvs = true;
+            state->last_trigger_valid = true;
+            state->last_trigger_epoch = event->epoch;
+            state->last_trigger_addr = event->addr;
+            state->last_trigger_rem_ms = event->u32;
+            state->last_trigger_time_us = now;
             fsm_sync(state, now);
         } break;
 
