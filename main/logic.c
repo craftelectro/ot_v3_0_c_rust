@@ -46,6 +46,8 @@ typedef struct {
     int64_t restore_deadline_us;
     int64_t next_state_req_us;
     int64_t last_local_trigger_us;
+    bool nvs_dirty;
+    int64_t nvs_next_flush_us;
 } logic_state_t;
 
 static logic_state_t s_state;
@@ -103,6 +105,7 @@ static void logic_queue_send(const logic_evt_t *e)
 #define NVS_K_OWNER_ADDR "owner_addr"
 
 #define RESTORE_WAIT_MS  1200  // ждать state_rsp после ребута (strict)
+#define NVS_DEBOUNCE_US  (1000 * 1000)
 
 // ===== NVS keys for MODE overrides (persistent) =====
 #define NVS_K_GMODE_VALID  "g_valid"
@@ -205,6 +208,7 @@ typedef struct {
     bool send_off;
     uint32_t off_epoch;
     bool log_transition;
+    bool flush_nvs_now;
     fsm_state_t from_state;
     fsm_state_t to_state;
     logic_evt_type_t event;
@@ -524,7 +528,7 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
             state_clear_active(state);
             state->zone.owner_valid = false;
             state->zone.pending_restore = false;
-            actions.save_nvs = true;
+            actions.flush_nvs_now = true;
             fsm_sync(state, now);
             break;
 
@@ -537,7 +541,7 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
                 if (state->restore_deadline_us && now > state->restore_deadline_us) {
                     state_clear_active(state);
                     state->zone.pending_restore = false;
-                    actions.save_nvs = true;
+                    actions.flush_nvs_now = true;
                     fsm_sync(state, now);
                 }
             }
@@ -551,6 +555,11 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
                 state_clear_active(state);
                 actions.save_nvs = true;
                 fsm_sync(state, now);
+            }
+
+            if (state->nvs_dirty && state->nvs_next_flush_us &&
+                now >= state->nvs_next_flush_us) {
+                actions.flush_nvs_now = true;
             }
 
             actions.set_relay = true;
@@ -577,6 +586,8 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
 
 static void apply_actions(logic_state_t *state, const fsm_actions_t *actions)
 {
+    int64_t now_us = esp_timer_get_time();
+
     if (actions->update_led) {
         rgb_set_mode_color(effective_mode(state));
     }
@@ -594,8 +605,18 @@ static void apply_actions(logic_state_t *state, const fsm_actions_t *actions)
     if (actions->send_off) {
         coap_if_send_off(actions->off_epoch);
     }
-    if (actions->save_nvs) {
+    if (actions->flush_nvs_now) {
+        ESP_LOGI(TAG, "NVS flush");
         nvs_save_all();
+        state->nvs_dirty = false;
+        state->nvs_next_flush_us = 0;
+    } else if (actions->save_nvs) {
+        state->nvs_dirty = true;
+        if (state->nvs_next_flush_us == 0) {
+            state->nvs_next_flush_us = now_us + NVS_DEBOUNCE_US;
+            ESP_LOGI(TAG, "NVS dirty, schedule flush in %lu ms",
+                     (unsigned long)(NVS_DEBOUNCE_US / 1000));
+        }
     }
     if (actions->log_transition) {
         ESP_LOGI(TAG, "FSM %s -> %s on %s",
