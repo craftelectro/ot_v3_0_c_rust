@@ -1,6 +1,7 @@
 #include "ot_app.h"
 #include "coap_if.h"
 #include "logic.h"
+#include "logic_cli.h"
 #include "config.h"
 #include "config_store.h"
 
@@ -97,6 +98,7 @@ static void ot_task_worker(void *ctx)
 #endif
 #if CONFIG_OPENTHREAD_CLI
     esp_openthread_cli_init();
+    logic_cli_register();
 #endif
 
     esp_netif_t *ot_netif = init_openthread_netif(&cfg);

@@ -116,6 +116,8 @@ static void logic_queue_send(const logic_evt_t *e)
 #define NVS_K_OWNER_ADDR "owner_addr"
 
 #define RESTORE_WAIT_MS  1200  // ждать state_rsp после ребута (strict)
+#define RESTORE_RETRY_INTERVAL_US (30 * 1000 * 1000)
+#define RESTORE_COLD_BOOT_TIMEOUT_US (3 * 60 * 1000 * 1000)
 #define NVS_DEBOUNCE_US  (5 * 1000 * 1000)
 #define RX_DEDUP_WINDOW_US (2 * 1000 * 1000)
 #define RX_DEDUP_MIN_DIFF_MS 300
@@ -663,7 +665,9 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
         case EVT_COLD_BOOT:
             state_clear_active(state);
             state->zone.owner_valid = false;
-            state->zone.pending_restore = false;
+            state->zone.pending_restore = true;
+            state->restore_deadline_us = now + RESTORE_COLD_BOOT_TIMEOUT_US;
+            state->next_state_req_us = now;
             actions.flush_nvs_now = true;
             fsm_sync(state, now);
             break;
@@ -672,7 +676,7 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
             if (state->zone.pending_restore) {
                 if (now >= state->next_state_req_us) {
                     actions.send_state_req = true;
-                    state->next_state_req_us = now + 1000 * 1000;
+                    state->next_state_req_us = now + RESTORE_RETRY_INTERVAL_US;
                 }
                 if (state->restore_deadline_us && now > state->restore_deadline_us) {
                     state_clear_active(state);
