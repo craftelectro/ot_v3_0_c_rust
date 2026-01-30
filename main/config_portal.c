@@ -265,7 +265,7 @@ static esp_err_t handle_save(httpd_req_t *req)
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
     }
     if (req->content_len >= sizeof(body)) {
-        return httpd_resp_send_err(req, HTTPD_413_REQUEST_ENTITY_TOO_LARGE, "Body too large");
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large");
     }
     size_t total = 0;
     while (total < req->content_len) {
