@@ -1391,9 +1391,9 @@ static void logic_task(void *arg)
         }
 #endif
 
-        // 4) Local sensor (only in AUTO effective mode, and NOT during pending_restore)
+        // 4) Local sensor (allow triggers even during pending_restore)
 #if HAS_TFMINI
-        if (effective_mode(&s_state) == MODE_AUTO && !s_state.zone.pending_restore) {
+        if (effective_mode(&s_state) == MODE_AUTO) {
             uint16_t dist = 0;
             if (tfmini_poll_once(&dist)) {
                 s_state.zone.dist_cm = dist;
@@ -1402,7 +1402,8 @@ static void logic_task(void *arg)
                 // ESP_LOGI(TAG, "TFMINI: dist=%u cm thr=%u", dist, TFMINI_TRIGGER_CM);
 
                 if (dist > 0 && dist <= config_store_get()->tfmini_trigger_cm) {
-                    logic_evt_t ev = {.type = EVT_LOCAL_TRIGGER, .b = false};
+                    bool force_new_owner = s_state.zone.pending_restore;
+                    logic_evt_t ev = {.type = EVT_LOCAL_TRIGGER, .b = force_new_owner};
                     fsm_actions_t actions = step(&s_state, &ev, now);
                     apply_actions(&s_state, &actions);
                 }
