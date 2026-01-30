@@ -63,32 +63,6 @@ static otMessage *build_state_req_msg(void)
     return m;
 }
 
-static bool rloc16_to_addr(uint16_t rloc16, otIp6Address *addr)
-{
-    if (!addr || !s_ot) {
-        return false;
-    }
-
-    const otMeshLocalPrefix *prefix = otThreadGetMeshLocalPrefix(s_ot);
-    if (!prefix) {
-        return false;
-    }
-
-    memset(addr, 0, sizeof(*addr));
-    memcpy(addr->mFields.m8, prefix->m8, OT_MESH_LOCAL_PREFIX_SIZE);
-
-    addr->mFields.m8[8] = 0x00;
-    addr->mFields.m8[9] = 0x00;
-    addr->mFields.m8[10] = 0x00;
-    addr->mFields.m8[11] = 0xff;
-    addr->mFields.m8[12] = 0xfe;
-    addr->mFields.m8[13] = 0x00;
-    addr->mFields.m8[14] = (uint8_t)(rloc16 >> 8);
-    addr->mFields.m8[15] = (uint8_t)(rloc16 & 0xff);
-
-    return true;
-}
-
 static void send_mcast(otMessage *m)
 {
     otMessageInfo info;
@@ -521,18 +495,15 @@ void coap_if_send_state_req(void)
 {
     if (!s_ot) return;
 
-    uint16_t leader_rloc = otThreadGetLeaderRloc(s_ot);
-    if (leader_rloc != 0 && leader_rloc != 0xfffe && leader_rloc != 0xffff) {
-        otIp6Address leader_addr;
-        if (rloc16_to_addr(leader_rloc, &leader_addr)) {
-            otMessage *ucast = build_state_req_msg();
-            if (ucast) {
-                otMessageInfo info;
-                memset(&info, 0, sizeof(info));
-                info.mPeerAddr = leader_addr;
-                info.mPeerPort = OT_DEFAULT_COAP_PORT;
-                send_ucast(ucast, &info);
-            }
+    otIp6Address leader_addr;
+    if (otThreadGetLeaderRloc(s_ot, &leader_addr) == OT_ERROR_NONE) {
+        otMessage *ucast = build_state_req_msg();
+        if (ucast) {
+            otMessageInfo info;
+            memset(&info, 0, sizeof(info));
+            info.mPeerAddr = leader_addr;
+            info.mPeerPort = OT_DEFAULT_COAP_PORT;
+            send_ucast(ucast, &info);
         }
     }
 
