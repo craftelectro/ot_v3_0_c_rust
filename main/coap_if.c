@@ -57,6 +57,20 @@ static void send_mcast(otMessage *m)
     }
 }
 
+static void send_ucast(otMessage *m, const otMessageInfo *peer)
+{
+    otMessageInfo info;
+    memset(&info, 0, sizeof(info));
+    info.mPeerAddr = peer->mPeerAddr;
+    info.mPeerPort = peer->mPeerPort;
+
+    otError e = otCoapSendRequest(s_ot, m, &info, NULL, NULL);
+    if (e != OT_ERROR_NONE) {
+        ESP_LOGW(TAG, "otCoapSendRequest(ucast) err=%d", (int)e);
+        otMessageFree(m);
+    }
+}
+
 // static void coap_send_empty_ack(otMessage *req, const otMessageInfo *req_info)
 // {
 //     // ACK нужен только для Confirmable запросов
@@ -223,14 +237,35 @@ static void on_state_req(void *ctx, otMessage *msg, const otMessageInfo *info)
     // ACK только для CON, для NON ничего не отвечаем
     coap_send_empty_ack(msg, info);
 
-    // кто угодно отвечает своим состоянием multicast
+    // кто угодно отвечает своим состоянием unicast обратно отправителю
     uint32_t epoch = 0;
     otIp6Address owner;
     uint32_t rem_ms = 0;
     bool active = false;
 
     logic_build_state(&epoch, &owner, &rem_ms, &active);
-    coap_if_send_state_rsp(epoch, &owner, rem_ms, active);
+    otMessage *rsp = new_post_msg();
+    if (rsp) {
+        append_uri(rsp, "zone");
+        char zid[8];
+        zone_id_str(zid, sizeof(zid));
+        append_uri(rsp, zid);
+        append_uri(rsp, "state_rsp");
+
+        char owner_str[OT_IP6_ADDRESS_STRING_SIZE];
+        otIp6AddressToString(&owner, owner_str, sizeof(owner_str));
+
+        char pl[200];
+        snprintf(pl, sizeof(pl), "e=%lu;a=%u;r=%lu;o=%s",
+                 (unsigned long)epoch,
+                 active ? 1u : 0u,
+                 (unsigned long)rem_ms,
+                 owner_str);
+
+        otCoapMessageSetPayloadMarker(rsp);
+        otMessageAppend(rsp, pl, (uint16_t)strlen(pl));
+        send_ucast(rsp, info);
+    }
 
     // НЕ send_ok() !
 }
