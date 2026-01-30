@@ -501,7 +501,7 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
                 }
             }
 
-            if (event->epoch < state->zone.epoch) {
+            if (event->epoch < state->zone.epoch && !state->zone.pending_restore) {
                 break;
             }
             if (event->epoch == state->zone.epoch && state->zone.owner_valid) {
@@ -579,7 +579,7 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
                 }
             }
 
-            if (event->epoch < state->zone.epoch) {
+            if (event->epoch < state->zone.epoch && !state->zone.pending_restore) {
                 break;
             }
             if (event->epoch == state->zone.epoch && state->zone.owner_valid) {
