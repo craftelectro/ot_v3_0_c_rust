@@ -158,6 +158,37 @@ static bool parse_ip_kv(const char *s, const char *key, otIp6Address *out)
     return (otIp6AddressFromString(buf, out) == OT_ERROR_NONE);
 }
 
+static bool parse_u32_kv(const char *s, const char *key, uint32_t *out)
+{
+    const char *p = strstr(s, key);
+    if (!p) {
+        return false;
+    }
+    p += strlen(key);
+    if (*p != '=') {
+        return false;
+    }
+    p++;
+
+    char *end = NULL;
+    unsigned long v = strtoul(p, &end, 10);
+    if (end == p) {
+        return false;
+    }
+    *out = (uint32_t)v;
+    return true;
+}
+
+static bool parse_bool_kv(const char *s, const char *key, bool *out)
+{
+    uint32_t v = 0;
+    if (!parse_u32_kv(s, key, &v)) {
+        return false;
+    }
+    *out = (v != 0);
+    return true;
+}
+
 // static int read_payload(otMessage *msg, char *buf, size_t n)
 // {
 //     uint16_t off = otMessageGetOffset(msg);
@@ -311,19 +342,39 @@ static void on_state_rsp(void *ctx, otMessage *msg, const otMessageInfo *info)
 
     // формат: e=123;a=1;r=600000;o=fdde:....
     rust_parsed_t parsed = {0};
-    if (!rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed)) {
+    if (rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed) &&
+        parsed.has_epoch && parsed.has_active) {
+        otIp6Address owner;
+        if (!parse_ip_kv(buf, "o", &owner)) {
+            memset(&owner, 0, sizeof(owner));
+        }
+
+        if (!logic_post_parsed(LOGIC_PARSED_STATE_RSP, &parsed, &owner, true)) {
+            return;
+        }
+
+        send_ok(msg, info);
         return;
     }
-    if (!parsed.has_epoch) return;
-    if (!parsed.has_active) return;
 
+    uint32_t epoch = 0;
+    uint32_t rem_ms = 0;
+    bool active = false;
     otIp6Address owner;
-    if (!parse_ip_kv(buf, "o", &owner)) memset(&owner, 0, sizeof(owner));
-
-    if (!logic_post_parsed(LOGIC_PARSED_STATE_RSP, &parsed, &owner, true)) {
+    if (!parse_u32_kv(buf, "e", &epoch)) {
         return;
     }
+    if (!parse_bool_kv(buf, "a", &active)) {
+        return;
+    }
+    if (!parse_u32_kv(buf, "r", &rem_ms)) {
+        rem_ms = 0;
+    }
+    if (!parse_ip_kv(buf, "o", &owner)) {
+        memset(&owner, 0, sizeof(owner));
+    }
 
+    logic_post_state_response(epoch, &owner, rem_ms, active);
     send_ok(msg, info);
 }
 
@@ -335,21 +386,36 @@ static void on_trigger(void *ctx, otMessage *msg, const otMessageInfo *info)
     int len = read_payload(msg, buf, sizeof(buf));
 
     rust_parsed_t parsed = {0};
-    if (!rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed)) {
-        return;
-    }
-    if (!logic_post_parsed(LOGIC_PARSED_TRIGGER, &parsed, &info->mPeerAddr, true)) {
+    if (rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed) &&
+        logic_post_parsed(LOGIC_PARSED_TRIGGER, &parsed, &info->mPeerAddr, true)) {
+        // ACK только для CON, для NON ничего не отвечаем
+        coap_send_empty_ack(msg, info);
+
+        if (parsed.has_epoch) {
+            uint32_t rem_ms = parsed.has_rem_ms ? parsed.rem_ms : config_store_get()->auto_hold_ms;
+            ESP_LOGI(TAG, "RX trigger from peer, epoch=%lu rem_ms=%lu",
+                     (unsigned long)parsed.epoch, (unsigned long)rem_ms);
+        }
         return;
     }
 
-    // ACK только для CON, для NON ничего не отвечаем
+    uint32_t epoch = 0;
+    uint32_t rem_ms = 0;
+    if (!parse_u32_kv(buf, "epoch", &epoch)) {
+        if (!parse_u32_kv(buf, "e", &epoch)) {
+            return;
+        }
+    }
+    if (!parse_u32_kv(buf, "rem_ms", &rem_ms)) {
+        if (!parse_u32_kv(buf, "h", &rem_ms)) {
+            rem_ms = config_store_get()->auto_hold_ms;
+        }
+    }
+
     coap_send_empty_ack(msg, info);
-
-    if (parsed.has_epoch) {
-        uint32_t rem_ms = parsed.has_rem_ms ? parsed.rem_ms : config_store_get()->auto_hold_ms;
-        ESP_LOGI(TAG, "RX trigger from peer, epoch=%lu rem_ms=%lu",
-                 (unsigned long)parsed.epoch, (unsigned long)rem_ms);
-    }
+    ESP_LOGI(TAG, "RX trigger from peer, epoch=%lu rem_ms=%lu",
+             (unsigned long)epoch, (unsigned long)rem_ms);
+    logic_post_trigger_rx(epoch, &info->mPeerAddr, rem_ms);
 
     // logic_post_state_response(epoch, &owner, rem_ms, active);
 
@@ -366,17 +432,22 @@ static void on_off(void *ctx, otMessage *msg, const otMessageInfo *info)
     int len = read_payload(msg, buf, sizeof(buf));
 
     rust_parsed_t parsed = {0};
-    if (!rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed)) {
-        return;
-    }
-    if (!logic_post_parsed(LOGIC_PARSED_OFF, &parsed, NULL, true)) {
+    if (rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed) &&
+        logic_post_parsed(LOGIC_PARSED_OFF, &parsed, NULL, true)) {
+        if (parsed.has_epoch) {
+            ESP_LOGI(TAG, "RX off epoch=%lu", (unsigned long)parsed.epoch);
+        }
+        send_ok(msg, info);
         return;
     }
 
-    if (parsed.has_epoch) {
-        ESP_LOGI(TAG, "RX off epoch=%lu", (unsigned long)parsed.epoch);
+    uint32_t epoch = 0;
+    if (!parse_u32_kv(buf, "e", &epoch)) {
+        return;
     }
 
+    ESP_LOGI(TAG, "RX off epoch=%lu", (unsigned long)epoch);
+    logic_post_off_rx(epoch);
     send_ok(msg, info);
 }
 
