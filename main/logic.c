@@ -116,7 +116,7 @@ static void logic_queue_send(const logic_evt_t *e)
 #define NVS_K_OWNER_ADDR "owner_addr"
 
 #define RESTORE_WAIT_MS  1200  // ждать state_rsp после ребута (strict)
-#define RESTORE_RETRY_INTERVAL_US (30 * 1000 * 1000)
+#define RESTORE_RETRY_INTERVAL_US (3 * 1000 * 1000)
 #define RESTORE_COLD_BOOT_TIMEOUT_US (3 * 60 * 1000 * 1000)
 #define NVS_DEBOUNCE_US  (5 * 1000 * 1000)
 #define RX_DEDUP_WINDOW_US (2 * 1000 * 1000)
