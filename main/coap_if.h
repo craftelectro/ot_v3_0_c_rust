@@ -15,7 +15,7 @@ extern "C" {
 void coap_if_register(otInstance *ot);
 
 // multicast SEND
-void coap_if_send_state_req(void);
+void coap_if_send_state_req(bool allow_mcast);
 void coap_if_send_state_rsp(uint32_t epoch,
                             const otIp6Address *owner,
                             uint32_t remaining_ms,

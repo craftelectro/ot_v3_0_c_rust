@@ -30,17 +30,39 @@ static void zone_id_str(char *out, size_t n)
     snprintf(out, n, "%d", cfg->zone_id);
 }
 
-static otMessage *new_post_msg(void)
+static otMessage *new_request_msg(otCoapType type, otCoapCode code)
 {
     otMessage *m = otCoapNewMessage(s_ot, NULL);
     if (!m) return NULL;
-    otCoapMessageInit(m, OT_COAP_TYPE_NON_CONFIRMABLE, OT_COAP_CODE_POST);
+    otCoapMessageInit(m, type, code);
     return m;
+}
+
+static otMessage *new_post_msg(void)
+{
+    return new_request_msg(OT_COAP_TYPE_NON_CONFIRMABLE, OT_COAP_CODE_POST);
 }
 
 static void append_uri(otMessage *m, const char *seg)
 {
     (void)otCoapMessageAppendUriPathOptions(m, seg);
+}
+
+static otMessage *build_state_req_msg(void)
+{
+    otMessage *m = new_request_msg(OT_COAP_TYPE_CONFIRMABLE, OT_COAP_CODE_GET);
+    if (!m) {
+        return NULL;
+    }
+
+    char zid[8];
+    zone_id_str(zid, sizeof(zid));
+
+    append_uri(m, "zone");
+    append_uri(m, zid);
+    append_uri(m, "state_req");
+
+    return m;
 }
 
 static void send_mcast(otMessage *m)
@@ -53,6 +75,20 @@ static void send_mcast(otMessage *m)
     otError e = otCoapSendRequest(s_ot, m, &info, NULL, NULL);
     if (e != OT_ERROR_NONE) {
         ESP_LOGW(TAG, "otCoapSendRequest(mcast) err=%d", (int)e);
+        otMessageFree(m);
+    }
+}
+
+static void send_ucast(otMessage *m, const otMessageInfo *peer)
+{
+    otMessageInfo info;
+    memset(&info, 0, sizeof(info));
+    info.mPeerAddr = peer->mPeerAddr;
+    info.mPeerPort = peer->mPeerPort;
+
+    otError e = otCoapSendRequest(s_ot, m, &info, NULL, NULL);
+    if (e != OT_ERROR_NONE) {
+        ESP_LOGW(TAG, "otCoapSendRequest(ucast) err=%d", (int)e);
         otMessageFree(m);
     }
 }
@@ -122,6 +158,37 @@ static bool parse_ip_kv(const char *s, const char *key, otIp6Address *out)
     if (i == 0) return false;
 
     return (otIp6AddressFromString(buf, out) == OT_ERROR_NONE);
+}
+
+static bool parse_u32_kv(const char *s, const char *key, uint32_t *out)
+{
+    const char *p = strstr(s, key);
+    if (!p) {
+        return false;
+    }
+    p += strlen(key);
+    if (*p != '=') {
+        return false;
+    }
+    p++;
+
+    char *end = NULL;
+    unsigned long v = strtoul(p, &end, 10);
+    if (end == p) {
+        return false;
+    }
+    *out = (uint32_t)v;
+    return true;
+}
+
+static bool parse_bool_kv(const char *s, const char *key, bool *out)
+{
+    uint32_t v = 0;
+    if (!parse_u32_kv(s, key, &v)) {
+        return false;
+    }
+    *out = (v != 0);
+    return true;
 }
 
 // static int read_payload(otMessage *msg, char *buf, size_t n)
@@ -223,14 +290,35 @@ static void on_state_req(void *ctx, otMessage *msg, const otMessageInfo *info)
     // ACK только для CON, для NON ничего не отвечаем
     coap_send_empty_ack(msg, info);
 
-    // кто угодно отвечает своим состоянием multicast
+    // кто угодно отвечает своим состоянием unicast обратно отправителю
     uint32_t epoch = 0;
     otIp6Address owner;
     uint32_t rem_ms = 0;
     bool active = false;
 
     logic_build_state(&epoch, &owner, &rem_ms, &active);
-    coap_if_send_state_rsp(epoch, &owner, rem_ms, active);
+    otMessage *rsp = new_post_msg();
+    if (rsp) {
+        append_uri(rsp, "zone");
+        char zid[8];
+        zone_id_str(zid, sizeof(zid));
+        append_uri(rsp, zid);
+        append_uri(rsp, "state_rsp");
+
+        char owner_str[OT_IP6_ADDRESS_STRING_SIZE];
+        otIp6AddressToString(&owner, owner_str, sizeof(owner_str));
+
+        char pl[200];
+        snprintf(pl, sizeof(pl), "e=%lu;a=%u;r=%lu;o=%s",
+                 (unsigned long)epoch,
+                 active ? 1u : 0u,
+                 (unsigned long)rem_ms,
+                 owner_str);
+
+        otCoapMessageSetPayloadMarker(rsp);
+        otMessageAppend(rsp, pl, (uint16_t)strlen(pl));
+        send_ucast(rsp, info);
+    }
 
     // НЕ send_ok() !
 }
@@ -256,19 +344,39 @@ static void on_state_rsp(void *ctx, otMessage *msg, const otMessageInfo *info)
 
     // формат: e=123;a=1;r=600000;o=fdde:....
     rust_parsed_t parsed = {0};
-    if (!rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed)) {
+    if (rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed) &&
+        parsed.has_epoch && parsed.has_active) {
+        otIp6Address owner;
+        if (!parse_ip_kv(buf, "o", &owner)) {
+            memset(&owner, 0, sizeof(owner));
+        }
+
+        if (!logic_post_parsed(LOGIC_PARSED_STATE_RSP, &parsed, &owner, true)) {
+            return;
+        }
+
+        send_ok(msg, info);
         return;
     }
-    if (!parsed.has_epoch) return;
-    if (!parsed.has_active) return;
 
+    uint32_t epoch = 0;
+    uint32_t rem_ms = 0;
+    bool active = false;
     otIp6Address owner;
-    if (!parse_ip_kv(buf, "o", &owner)) memset(&owner, 0, sizeof(owner));
-
-    if (!logic_post_parsed(LOGIC_PARSED_STATE_RSP, &parsed, &owner, true)) {
+    if (!parse_u32_kv(buf, "e", &epoch)) {
         return;
     }
+    if (!parse_bool_kv(buf, "a", &active)) {
+        return;
+    }
+    if (!parse_u32_kv(buf, "r", &rem_ms)) {
+        rem_ms = 0;
+    }
+    if (!parse_ip_kv(buf, "o", &owner)) {
+        memset(&owner, 0, sizeof(owner));
+    }
 
+    logic_post_state_response(epoch, &owner, rem_ms, active);
     send_ok(msg, info);
 }
 
@@ -280,21 +388,36 @@ static void on_trigger(void *ctx, otMessage *msg, const otMessageInfo *info)
     int len = read_payload(msg, buf, sizeof(buf));
 
     rust_parsed_t parsed = {0};
-    if (!rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed)) {
-        return;
-    }
-    if (!logic_post_parsed(LOGIC_PARSED_TRIGGER, &parsed, &info->mPeerAddr, true)) {
+    if (rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed) &&
+        logic_post_parsed(LOGIC_PARSED_TRIGGER, &parsed, &info->mPeerAddr, true)) {
+        // ACK только для CON, для NON ничего не отвечаем
+        coap_send_empty_ack(msg, info);
+
+        if (parsed.has_epoch) {
+            uint32_t rem_ms = parsed.has_rem_ms ? parsed.rem_ms : config_store_get()->auto_hold_ms;
+            ESP_LOGI(TAG, "RX trigger from peer, epoch=%lu rem_ms=%lu",
+                     (unsigned long)parsed.epoch, (unsigned long)rem_ms);
+        }
         return;
     }
 
-    // ACK только для CON, для NON ничего не отвечаем
+    uint32_t epoch = 0;
+    uint32_t rem_ms = 0;
+    if (!parse_u32_kv(buf, "epoch", &epoch)) {
+        if (!parse_u32_kv(buf, "e", &epoch)) {
+            return;
+        }
+    }
+    if (!parse_u32_kv(buf, "rem_ms", &rem_ms)) {
+        if (!parse_u32_kv(buf, "h", &rem_ms)) {
+            rem_ms = config_store_get()->auto_hold_ms;
+        }
+    }
+
     coap_send_empty_ack(msg, info);
-
-    if (parsed.has_epoch) {
-        uint32_t rem_ms = parsed.has_rem_ms ? parsed.rem_ms : config_store_get()->auto_hold_ms;
-        ESP_LOGI(TAG, "RX trigger from peer, epoch=%lu rem_ms=%lu",
-                 (unsigned long)parsed.epoch, (unsigned long)rem_ms);
-    }
+    ESP_LOGI(TAG, "RX trigger from peer, epoch=%lu rem_ms=%lu",
+             (unsigned long)epoch, (unsigned long)rem_ms);
+    logic_post_trigger_rx(epoch, &info->mPeerAddr, rem_ms);
 
     // logic_post_state_response(epoch, &owner, rem_ms, active);
 
@@ -311,17 +434,22 @@ static void on_off(void *ctx, otMessage *msg, const otMessageInfo *info)
     int len = read_payload(msg, buf, sizeof(buf));
 
     rust_parsed_t parsed = {0};
-    if (!rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed)) {
-        return;
-    }
-    if (!logic_post_parsed(LOGIC_PARSED_OFF, &parsed, NULL, true)) {
+    if (rust_parse_payload((const uint8_t *)buf, (uint32_t)len, &parsed) &&
+        logic_post_parsed(LOGIC_PARSED_OFF, &parsed, NULL, true)) {
+        if (parsed.has_epoch) {
+            ESP_LOGI(TAG, "RX off epoch=%lu", (unsigned long)parsed.epoch);
+        }
+        send_ok(msg, info);
         return;
     }
 
-    if (parsed.has_epoch) {
-        ESP_LOGI(TAG, "RX off epoch=%lu", (unsigned long)parsed.epoch);
+    uint32_t epoch = 0;
+    if (!parse_u32_kv(buf, "e", &epoch)) {
+        return;
     }
 
+    ESP_LOGI(TAG, "RX off epoch=%lu", (unsigned long)epoch);
+    logic_post_off_rx(epoch);
     send_ok(msg, info);
 }
 
@@ -436,24 +564,32 @@ void coap_if_register(otInstance *ot)
 
 // ---- SEND (multicast) ----
 
-void coap_if_send_state_req(void)
+void coap_if_send_state_req(bool allow_mcast)
 {
     if (!s_ot) return;
 
-    otMessage *m = new_post_msg();
-    if (!m) return;
+    otIp6Address leader_addr;
+    if (otThreadGetLeaderRloc(s_ot, &leader_addr) == OT_ERROR_NONE) {
+        otMessage *ucast = build_state_req_msg();
+        if (ucast) {
+            otMessageInfo info;
+            memset(&info, 0, sizeof(info));
+            info.mPeerAddr = leader_addr;
+            info.mPeerPort = OT_DEFAULT_COAP_PORT;
+            char addr_str[OT_IP6_ADDRESS_STRING_SIZE];
+            otIp6AddressToString(&leader_addr, addr_str, sizeof(addr_str));
+            ESP_LOGI(TAG, "state_req ucast -> %s", addr_str);
+            send_ucast(ucast, &info);
+        }
+    }
 
-    char zid[8];
-    zone_id_str(zid, sizeof(zid));
-
-    append_uri(m, "zone");
-    append_uri(m, zid);
-    append_uri(m, "state_req");
-
-    otCoapMessageSetPayloadMarker(m);
-    otMessageAppend(m, "1", 1);
-
-    send_mcast(m);
+    if (allow_mcast) {
+        otMessage *mcast = build_state_req_msg();
+        if (mcast) {
+            ESP_LOGI(TAG, "state_req mcast -> ff03::1");
+            send_mcast(mcast);
+        }
+    }
 }
 
 void coap_if_send_state_rsp(uint32_t epoch,

@@ -46,6 +46,8 @@ typedef struct {
 
     int64_t restore_deadline_us;
     int64_t next_state_req_us;
+    int64_t thread_ready_since_us;
+    uint32_t restore_attempts;
     int64_t last_local_trigger_us;
     bool nvs_dirty;
     uint64_t nvs_next_flush_us;
@@ -116,6 +118,12 @@ static void logic_queue_send(const logic_evt_t *e)
 #define NVS_K_OWNER_ADDR "owner_addr"
 
 #define RESTORE_WAIT_MS  1200  // ждать state_rsp после ребута (strict)
+#define RESTORE_RETRY_INTERVAL_US (3 * 1000 * 1000)
+#define RESTORE_RETRY_JITTER_MS 200
+#define RESTORE_COLD_BOOT_TIMEOUT_US (3 * 60 * 1000 * 1000)
+#define RESTORE_SETTLE_DELAY_US (300 * 1000)
+#define RESTORE_MCAST_START_ATTEMPT 5
+#define RESTORE_MCAST_EVERY_N 5
 #define NVS_DEBOUNCE_US  (5 * 1000 * 1000)
 #define RX_DEDUP_WINDOW_US (2 * 1000 * 1000)
 #define RX_DEDUP_MIN_DIFF_MS 300
@@ -216,6 +224,7 @@ typedef struct {
     bool update_led;
     bool save_nvs;
     bool send_state_req;
+    bool state_req_allow_mcast;
     bool send_trigger;
     uint32_t trigger_rem_ms;
     bool send_off;
@@ -499,7 +508,7 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
                 }
             }
 
-            if (event->epoch < state->zone.epoch) {
+            if (event->epoch < state->zone.epoch && !state->zone.pending_restore) {
                 break;
             }
             if (event->epoch == state->zone.epoch && state->zone.owner_valid) {
@@ -577,7 +586,7 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
                 }
             }
 
-            if (event->epoch < state->zone.epoch) {
+            if (event->epoch < state->zone.epoch && !state->zone.pending_restore) {
                 break;
             }
             if (event->epoch == state->zone.epoch && state->zone.owner_valid) {
@@ -657,13 +666,17 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
             state->zone.pending_restore = true;
             state->restore_deadline_us = now + (int64_t)RESTORE_WAIT_MS * 1000;
             state->next_state_req_us = now;
+            state->restore_attempts = 0;
             fsm_sync(state, now);
             break;
 
         case EVT_COLD_BOOT:
             state_clear_active(state);
             state->zone.owner_valid = false;
-            state->zone.pending_restore = false;
+            state->zone.pending_restore = true;
+            state->restore_deadline_us = now + RESTORE_COLD_BOOT_TIMEOUT_US;
+            state->next_state_req_us = now;
+            state->restore_attempts = 0;
             actions.flush_nvs_now = true;
             fsm_sync(state, now);
             break;
@@ -671,8 +684,27 @@ static fsm_actions_t step(logic_state_t *state, const logic_evt_t *event, int64_
         case EVT_TICK: {
             if (state->zone.pending_restore) {
                 if (now >= state->next_state_req_us) {
-                    actions.send_state_req = true;
-                    state->next_state_req_us = now + 1000 * 1000;
+                    if (state->thread_ready_since_us &&
+                        (now - state->thread_ready_since_us) >= RESTORE_SETTLE_DELAY_US) {
+                        otIp6Address me;
+                        if (coap_if_get_my_meshlocal_eid(&me)) {
+                            state->restore_attempts++;
+                            actions.send_state_req = true;
+                            actions.state_req_allow_mcast =
+                                (state->restore_attempts >= RESTORE_MCAST_START_ATTEMPT &&
+                                 (state->restore_attempts % RESTORE_MCAST_EVERY_N) == 0);
+                            ESP_LOGI(TAG, "restore: state_req attempt=%lu mcast=%d",
+                                     (unsigned long)state->restore_attempts,
+                                     actions.state_req_allow_mcast ? 1 : 0);
+                        } else {
+                            ESP_LOGW(TAG, "restore: no mesh-local address yet");
+                        }
+                    } else {
+                        ESP_LOGW(TAG, "restore: thread not settled yet");
+                    }
+                    uint32_t jitter_ms = esp_random() % RESTORE_RETRY_JITTER_MS;
+                    state->next_state_req_us =
+                        now + RESTORE_RETRY_INTERVAL_US + (int64_t)jitter_ms * 1000;
                 }
                 if (state->restore_deadline_us && now > state->restore_deadline_us) {
                     state_clear_active(state);
@@ -732,7 +764,7 @@ static void apply_actions(logic_state_t *state, const fsm_actions_t *actions)
     }
     if (actions->send_state_req) {
         if (coap_if_thread_ready()) {
-            coap_if_send_state_req();
+            coap_if_send_state_req(actions->state_req_allow_mcast);
         }
     }
     if (actions->send_trigger) {
@@ -1319,6 +1351,10 @@ static void logic_task(void *arg)
     nvs_load_all(def_mode);
 
     s_state.fsm = FSM_AUTO_IDLE;
+    {
+        fsm_actions_t init_actions = {.update_led = true};
+        apply_actions(&s_state, &init_actions);
+    }
 
     // Ждём пока Thread реально "в сети" (иначе multicast часто дропается)
     int64_t wait_until = esp_timer_get_time() + 5000 * 1000; // 5 сек
@@ -1328,7 +1364,7 @@ static void logic_task(void *arg)
 
     ESP_LOGI(TAG, "boot: send state_req (thread_ready=%d)", coap_if_thread_ready());
     if (coap_if_thread_ready()) {
-        coap_if_send_state_req();
+        coap_if_send_state_req(false);
     } else {
         ESP_LOGW(TAG, "boot: thread not ready -> defer state_req");
     }
@@ -1369,6 +1405,13 @@ static void logic_task(void *arg)
 
     for (;;) {
         now = esp_timer_get_time();
+        if (coap_if_thread_ready()) {
+            if (s_state.thread_ready_since_us == 0) {
+                s_state.thread_ready_since_us = now;
+            }
+        } else {
+            s_state.thread_ready_since_us = 0;
+        }
 
         // 1) Drain logic events queue (CoAP -> logic)
         logic_evt_t e;
@@ -1387,9 +1430,9 @@ static void logic_task(void *arg)
         }
 #endif
 
-        // 4) Local sensor (only in AUTO effective mode, and NOT during pending_restore)
+        // 4) Local sensor (allow triggers even during pending_restore)
 #if HAS_TFMINI
-        if (effective_mode(&s_state) == MODE_AUTO && !s_state.zone.pending_restore) {
+        if (effective_mode(&s_state) == MODE_AUTO) {
             uint16_t dist = 0;
             if (tfmini_poll_once(&dist)) {
                 s_state.zone.dist_cm = dist;
@@ -1398,7 +1441,8 @@ static void logic_task(void *arg)
                 // ESP_LOGI(TAG, "TFMINI: dist=%u cm thr=%u", dist, TFMINI_TRIGGER_CM);
 
                 if (dist > 0 && dist <= config_store_get()->tfmini_trigger_cm) {
-                    logic_evt_t ev = {.type = EVT_LOCAL_TRIGGER, .b = false};
+                    bool force_new_owner = s_state.zone.pending_restore;
+                    logic_evt_t ev = {.type = EVT_LOCAL_TRIGGER, .b = force_new_owner};
                     fsm_actions_t actions = step(&s_state, &ev, now);
                     apply_actions(&s_state, &actions);
                 }

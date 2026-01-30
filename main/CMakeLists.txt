@@ -21,6 +21,7 @@ idf_component_register(
         "io_board.c"
         "tfmini.c"
         "logic.c"
+        "logic_cli.c"
         "coap_if.c"
         "ot_app.c"
         "config_store.c"

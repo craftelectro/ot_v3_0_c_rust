@@ -155,7 +155,8 @@ static void url_decode(char *dst, const char *src, size_t dst_len)
             dst[di++] = ' ';
             continue;
         }
-        if (src[si] == '%' && isxdigit((unsigned char)src[si + 1]) &&
+        if (src[si] == '%' && src[si + 1] != '\0' && src[si + 2] != '\0' &&
+            isxdigit((unsigned char)src[si + 1]) &&
             isxdigit((unsigned char)src[si + 2])) {
             int hi = hex_value(src[si + 1]);
             int lo = hex_value(src[si + 2]);
@@ -260,11 +261,24 @@ static bool parse_uint(const char *s, uint32_t *out)
 static esp_err_t handle_save(httpd_req_t *req)
 {
     char body[512];
-    int received = httpd_req_recv(req, body, sizeof(body) - 1);
-    if (received <= 0) {
+    if (req->content_len <= 0) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
     }
-    body[received] = '\0';
+    if (req->content_len >= sizeof(body)) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large");
+    }
+    size_t total = 0;
+    while (total < req->content_len) {
+        int received = httpd_req_recv(req, body + total, req->content_len - total);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (received <= 0) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+        }
+        total += (size_t)received;
+    }
+    body[total] = '\0';
 
     app_config_t cfg = *config_store_get();
     char tmp[128];
